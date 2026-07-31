@@ -526,7 +526,7 @@ function ChatWorkspace({
           <button className={activeTab === "memory" ? "active" : ""} onClick={() => setActiveTab("memory")}><MemoryStick size={15} />项目记忆</button>
         </nav>
         <div className="directory-content">
-          {activeTab === "overview" && <DirectoryOverview run={run} isRunning={isRunning} setActiveTab={setActiveTab} />}
+          {activeTab === "overview" && <DirectoryOverview setActiveTab={setActiveTab} />}
           {activeTab === "monitor" && <DirectoryMonitor run={run} events={events} latestEvents={latestEvents} ragHits={ragHits} metrics={metrics} isRunning={isRunning} selectedAgent={selectedAgent} setSelectedAgent={setSelectedAgent} currentAgentOutput={currentAgentOutput} currentAgentMeta={currentAgentMeta} stageStatus={stageStatus} />}
           {activeTab === "rag" && <DirectoryRag query={query} setQuery={setQuery} onSearch={onSearch} loading={ragLoading} hits={ragHits} contextPins={contextPins} toggleContext={toggleContext} />}
           {activeTab === "memory" && <DirectoryMemory memory={memory} />}
@@ -673,6 +673,10 @@ function MonitorOperations({ projectName, run, events, latestEvents, metrics, is
        <section className="visual-panel inspector-visual"><div className="visual-panel-head"><div><span>HARNESS / INSPECTOR</span><h2>{currentAgentMeta.label}</h2></div><span className="compliance-badge"><ShieldCheck size={13} /> passed</span></div><div className="inspector-agent-line"><span className={`directory-agent-icon ${currentAgentMeta.color}`}><AgentIcon size={16} /></span><span><strong>{currentAgentMeta.role}</strong><small>{currentAgentOutput?.headline || "最近一次运行已完成"}</small></span></div><div className="inspector-skills">{(currentAgentMeta.skills || []).map((skill) => <span key={skill}>{skill}</span>)}</div><div className="inspector-copy"><span>{currentAgentOutput?.summary || "最近一次客服处理已完成，Harness 已通过输出字段和风险边界检查。"}</span><small className="inspector-provider">生成方式：{currentAgentOutput?.provider === "deepseek" ? `DeepSeek / ${currentAgentOutput.model || "configured model"}` : currentAgentOutput?.provider_error ? `local-fallback · ${currentAgentOutput.provider_error}` : "local-fallback"}</small></div><div className="inspector-stats"><span><Clock3 size={14} /> {displayDuration}ms</span><span><Database size={14} /> {ragHits.length} RAG hits</span><span><ShieldCheck size={14} /> supervised</span></div></section>
       <section className="visual-panel live-events-visual"><div className="visual-panel-head"><div><span>03 / OBSERVE</span><h2>实时 Harness 事件</h2></div><span className="event-count"><Activity size={13} /> {displayEvents.length}</span></div><div className="live-event-list">{displayLatestEvents.slice(0, 7).map((event) => <div className="live-event-item" key={`${event.id}-${event.timestamp}`}><span className={`event-dot ${event.status}`} /><span><strong>{event.agent || event.node || "system"}</strong><small>{event.message}</small>{eventContext(event) && <em>{eventContext(event)}</em>}</span><time>{event.duration_ms ? `${event.duration_ms}ms` : "now"}</time></div>)}</div></section>
     </div>
+    <section className="monitor-output-preview">
+      <div className="monitor-output-head"><div><span>OUTPUT / PREVIEW</span><h2>本次客服处理产物</h2></div><span className="visual-live"><span />{isRunning ? "LIVE" : "READY"}</span></div>
+      <ProductPreview run={run} isRunning={isRunning} />
+    </section>
   </div>;
 }
 
@@ -735,18 +739,11 @@ function eventContext(event) {
   return identifiers.join(" · ");
 }
 
-function DirectoryOverview({ run, isRunning, setActiveTab }) {
-  return <div className="directory-stack">
-    <div className="directory-status-card">
-      <div className="directory-card-title"><span>客服 Copilot</span><span className="status-ok"><span />在线</span></div>
-      <strong>{isRunning ? "正在处理当前问题" : "当前客服空间"}</strong>
-      <p>{run?.prompt || "在左侧 Chat 输入订单、物流、退款或其他问题。"}</p>
-      <button className="directory-monitor-entry" onClick={() => setActiveTab("monitor")}><Activity size={13} />打开 Agent 监控 <ArrowRight size={12} /></button>
-    </div>
-    <div className="directory-preview-card">
-      <div className="directory-section-title"><span>OUTPUT / PREVIEW</span><span className="live-mini"><span />实时</span></div>
-      <ProductPreview run={run} isRunning={isRunning} />
-    </div>
+function DirectoryOverview({ setActiveTab }) {
+  return <div className="directory-overview-quiet">
+    <span className="directory-kicker">CURRENT SESSION</span>
+    <p>处理结果、Agent 线路和 Harness 事件统一放在监控中心。</p>
+    <button className="directory-monitor-entry" onClick={() => setActiveTab("monitor")}><Activity size={13} />打开监控中心 <ArrowRight size={12} /></button>
   </div>;
 }
 

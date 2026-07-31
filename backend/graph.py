@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any
 
 from langgraph.graph import END, StateGraph
 
+from .deepseek import DeepSeekError, deepseek_client
 from .harness import AGENT_META, Harness, emit
 from .models import AgentState
 from .rag import rag
@@ -29,7 +31,7 @@ def latest_user_message(state: AgentState) -> str:
     return state.get("prompt", "").strip()
 
 
-def classify_intent(prompt: str) -> tuple[str, str, float]:
+def classify_intent_fallback(prompt: str) -> tuple[str, str, float]:
     text = prompt.lower()
     if re.search(r"退款|退货|取消|退钱|售后", text):
         return "refund", "退款 / 退货", 0.96
@@ -42,6 +44,73 @@ def classify_intent(prompt: str) -> tuple[str, str, float]:
     if re.search(r"订单|订单号|买的|下单", text):
         return "order_status", "订单状态查询", 0.95
     return "general", "一般客服咨询", 0.78
+
+
+def _extract_json_object(content: str) -> dict[str, Any]:
+    candidate = content.strip()
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", candidate, flags=re.IGNORECASE | re.DOTALL)
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("model response did not contain a JSON object")
+    value = json.loads(candidate[start : end + 1])
+    if not isinstance(value, dict):
+        raise ValueError("model response JSON was not an object")
+    return value
+
+
+def classify_intent(
+    prompt: str,
+    history: list[dict[str, str]] | None = None,
+) -> tuple[str, str, float, str]:
+    """Classify with DeepSeek when configured and fall back to local rules offline."""
+    fallback = classify_intent_fallback(prompt)
+    if not deepseek_client.enabled:
+        deepseek_client.last_error = "DeepSeek is not configured"
+        return (*fallback, "local-fallback")
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是电商客服意图识别 Agent。只返回 JSON，不要 markdown。"
+                '格式必须是 {"intent":"logistics|order_status|refund|complaint|general",'
+                '"label":"中文意图名称","confidence":0.0到1.0}。'
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "latest_question": prompt,
+                    "conversation_history": (history or [])[-8:],
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    try:
+        result = _extract_json_object(
+            deepseek_client.complete(
+                messages,
+                temperature=0.1,
+                max_tokens=180,
+                response_format={"type": "json_object"},
+            )
+        )
+        intent = str(result.get("intent", "")).strip()
+        allowed = {"logistics", "order_status", "refund", "complaint", "general"}
+        if intent not in allowed:
+            raise ValueError("model returned an unsupported intent")
+        label = str(result.get("label") or fallback[1]).strip()
+        confidence = max(0.0, min(1.0, float(result.get("confidence", fallback[2]))))
+        return intent, label, confidence, "deepseek"
+    except DeepSeekError:
+        return (*fallback, "local-fallback")
+    except (ValueError, TypeError, json.JSONDecodeError):
+        deepseek_client.last_error = "DeepSeek response failed intent schema validation"
+        return (*fallback, "local-fallback")
 
 
 def planning_node(state: AgentState) -> dict[str, Any]:
@@ -76,7 +145,11 @@ def planning_node(state: AgentState) -> dict[str, Any]:
 
 def intent_logic(state: AgentState) -> dict[str, Any]:
     time.sleep(0.08)
-    intent, label, confidence = classify_intent(latest_user_message(state))
+    intent, label, confidence, provider = classify_intent(
+        latest_user_message(state),
+        state.get("conversation_history", []),
+    )
+    provider_error = deepseek_client.last_error if provider == "local-fallback" else None
     customer_context = state.get("customer_context") or make_customer_context(
         state.get("conversation_id") or state["run_id"],
     )
@@ -86,6 +159,9 @@ def intent_logic(state: AgentState) -> dict[str, Any]:
         "intent": intent,
         "intent_label": label,
         "confidence": confidence,
+        "provider": provider,
+        "model": deepseek_client.model if provider == "deepseek" else None,
+        "provider_error": provider_error,
         "entities": {
             "order_id": customer_context["order_id"],
             "tracking_id": customer_context["tracking_id"],
@@ -101,6 +177,9 @@ def intent_logic(state: AgentState) -> dict[str, Any]:
         agent="intent",
         intent=intent,
         confidence=confidence,
+        provider=provider,
+        model=deepseek_client.model if provider == "deepseek" else None,
+        provider_error=provider_error,
         turn=state.get("turn", 1),
     )
     return {
@@ -156,6 +235,64 @@ def research_logic(state: AgentState) -> dict[str, Any]:
     }
 
 
+def generate_customer_reply(
+    state: AgentState,
+    customer_context: dict[str, str],
+    intent: str,
+) -> tuple[str, str] | None:
+    """Generate a reply with DeepSeek while keeping synthetic IDs under local control."""
+    if not deepseek_client.enabled:
+        deepseek_client.last_error = "DeepSeek is not configured"
+        return None
+    context = [
+        {
+            "id": item.get("id"),
+            "title": item.get("title"),
+            "content": item.get("content"),
+            "compliance": item.get("compliance"),
+        }
+        for item in state.get("retrieved_context", [])[:6]
+    ]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是电商客服 Builder agent。请用自然、有人情味的中文回复客户。"
+                "只能依据提供的意图、合成订单信息和知识库内容，不要声称调用了真实物流系统。"
+                "必须原样保留订单号和物流单号；不要输出 markdown 标题、JSON、内部 Agent 名称或 API 信息。"
+                "回复长度控制在 2 到 4 句话，给出明确的下一步。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "latest_question": latest_user_message(state),
+                    "conversation_history": state.get("conversation_history", [])[-8:],
+                    "intent": intent,
+                    "order_id": customer_context["order_id"],
+                    "tracking_id": customer_context["tracking_id"],
+                    "knowledge_context": context,
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    try:
+        reply = deepseek_client.complete(messages, temperature=0.45, max_tokens=360)
+        reply = re.sub(r"^```(?:text|markdown)?\s*|\s*```$", "", reply, flags=re.IGNORECASE | re.DOTALL).strip()
+        if (
+            customer_context["order_id"] not in reply
+            or customer_context["tracking_id"] not in reply
+            or len(reply) < 12
+        ):
+            deepseek_client.last_error = "DeepSeek response failed controlled ID validation"
+            return None
+        return reply, "deepseek"
+    except DeepSeekError:
+        return None
+
+
 def builder_logic(state: AgentState) -> dict[str, Any]:
     time.sleep(0.2)
     customer_context = state.get("customer_context") or make_customer_context(
@@ -197,12 +334,20 @@ def builder_logic(state: AgentState) -> dict[str, Any]:
             f"我先为您建立本轮演示查询，订单号是 {order_id}，物流单号是 {tracking_id}。"
             "您可以直接告诉我想查订单、物流还是退款，我会沿用这组信息继续处理。"
         )
+    generated_reply = generate_customer_reply(state, customer_context, intent)
+    provider = "local-fallback"
+    if generated_reply:
+        reply, provider = generated_reply
+    provider_error = deepseek_client.last_error if provider == "local-fallback" else None
     output = {
         "headline": "生成客服回复草稿",
         "summary": f"已根据第 {turn} 轮对话、意图和知识库结果生成回复。",
         "customer_reply": reply,
         "order_id": order_id,
         "tracking_id": tracking_id,
+        "provider": provider,
+        "model": deepseek_client.model if provider == "deepseek" else None,
+        "provider_error": provider_error,
         "turn": turn,
         "suggested_questions": ["现在到哪里了？", "为什么物流没有更新？", "我想申请退款怎么办？"],
     }
@@ -214,6 +359,9 @@ def builder_logic(state: AgentState) -> dict[str, Any]:
         node="builder_agent",
         agent="builder",
         turn=turn,
+        provider=provider,
+        model=deepseek_client.model if provider == "deepseek" else None,
+        provider_error=provider_error,
     )
     return {"agent_outputs": {**state.get("agent_outputs", {}), "builder": output}}
 
@@ -294,6 +442,8 @@ def reflection_logic(state: AgentState) -> dict[str, Any]:
         "order_id": context.get("order_id"),
         "tracking_id": context.get("tracking_id"),
         "suggested_questions": builder.get("suggested_questions", []),
+        "llm_provider": builder.get("provider", "local-fallback"),
+        "llm_model": builder.get("model"),
     }
     emit(
         state,

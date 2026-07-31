@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   Clock3,
   ChevronDown,
+  Copy,
   Database,
   FileSearch,
   GitBranch,
@@ -95,23 +96,34 @@ const DEFAULT_MONITOR_EVENTS = [
   { id: "demo-7", type: "memory", status: "completed", node: "memory", agent: "memory", message: "已保存本次客服处理上下文", timestamp: "2026-07-31T09:42:21", duration_ms: 32 },
 ];
 
+const DEFAULT_CHAT_MESSAGES = [
+  {
+    role: "assistant",
+    content: "您好，欢迎来找我～我可以帮您查订单、看物流、处理退款。如果问题比较复杂，我也会帮您转给人工客服。请问您现在遇到什么问题啦？",
+  },
+];
+
+function readStorage(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function App() {
-  const [activeTab, setActiveTab] = useState("overview");
+  const [activeTab, setActiveTab] = useState(() => localStorage.getItem("forgeflow-active-tab") || "overview");
   const [prompt, setPrompt] = useState(() => localStorage.getItem("forgeflow-prompt") || initialPrompt);
   const [projectName, setProjectName] = useState(() => {
     const stored = localStorage.getItem("forgeflow-project");
     return stored && stored !== "Aurora Finance Copilot" ? stored : "客服处理工作流";
   });
-  const [conversationId] = useState(() => localStorage.getItem("forgeflow-conversation") || `conversation-${Date.now()}`);
+  const [conversationId, setConversationId] = useState(() => localStorage.getItem("forgeflow-conversation") || `conversation-${Date.now()}`);
   const [chatDraft, setChatDraft] = useState("");
-  const [chatMessages, setChatMessages] = useState([
-    {
-      role: "assistant",
-      content: "您好，欢迎来找我～我可以帮您查订单、看物流、处理退款。如果问题比较复杂，我也会帮您转给人工客服。请问您现在遇到什么问题啦？",
-    },
-  ]);
-  const [run, setRun] = useState(null);
-  const [events, setEvents] = useState([]);
+  const [chatMessages, setChatMessages] = useState(() => readStorage("forgeflow-chat-messages", DEFAULT_CHAT_MESSAGES));
+  const [run, setRun] = useState(() => readStorage("forgeflow-run", null));
+  const [events, setEvents] = useState(() => readStorage("forgeflow-events", []));
   const [metrics, setMetrics] = useState({ total_runs: 0, active_runs: 0, completed_runs: 0, avg_node_ms: 0, guardrail_pass_rate: 100 });
   const [memory, setMemory] = useState({ runs: [] });
   const [isRunning, setIsRunning] = useState(false);
@@ -121,6 +133,37 @@ function App() {
   const [ragLoading, setRagLoading] = useState(false);
   const [contextPins, setContextPins] = useState([]);
   const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    localStorage.setItem("forgeflow-active-tab", activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    localStorage.setItem("forgeflow-chat-messages", JSON.stringify(chatMessages));
+  }, [chatMessages]);
+
+  useEffect(() => {
+    if (run) localStorage.setItem("forgeflow-run", JSON.stringify(run));
+    else localStorage.removeItem("forgeflow-run");
+  }, [run]);
+
+  useEffect(() => {
+    localStorage.setItem("forgeflow-events", JSON.stringify(events));
+  }, [events]);
+
+  const resetConversation = () => {
+    const nextConversationId = `conversation-${Date.now()}`;
+    setConversationId(nextConversationId);
+    setChatMessages(DEFAULT_CHAT_MESSAGES);
+    setChatDraft("");
+    setRun(null);
+    setEvents([]);
+    setActiveTab("overview");
+    localStorage.setItem("forgeflow-conversation", nextConversationId);
+    localStorage.removeItem("forgeflow-chat-messages");
+    localStorage.removeItem("forgeflow-run");
+    localStorage.removeItem("forgeflow-events");
+  };
 
   const showToast = (message, detail = "", kind = "success") => {
     setToast({ message, detail, kind });
@@ -362,17 +405,16 @@ function App() {
     toggleContext={toggleContext}
     memory={memory}
     onIntentAnalysis={showIntentAnalysisWarning}
+    onNewConversation={resetConversation}
   />;
 }
 
 function ChatWorkspace({
   projectName,
-  setProjectName,
   chatMessages,
   chatDraft,
   setChatDraft,
   onSendChat,
-  onRun,
   isRunning,
   run,
   activeTab,
@@ -394,6 +436,7 @@ function ChatWorkspace({
   toggleContext,
   memory,
   onIntentAnalysis,
+  onNewConversation,
 }) {
   if (activeTab !== "overview") {
     return <OperationsPage
@@ -430,7 +473,7 @@ function ChatWorkspace({
       </button>
       <div className="chat-header-actions">
         <span className="connection-state"><span />服务在线</span>
-        <button className="chat-new-button" onClick={() => window.location.reload()} title="新建会话"><Plus size={16} /></button>
+        <button className="chat-new-button" onClick={onNewConversation} title="新建会话"><Plus size={16} /></button>
         <span className="avatar">YC</span>
       </div>
     </header>
@@ -627,7 +670,7 @@ function MonitorOperations({ projectName, run, events, latestEvents, metrics, is
       <section className="visual-panel pulse-visual"><div className="visual-panel-head"><div><span>EVENT PULSE</span><h2>系统活动</h2></div><BarChart3 size={18} className="visual-icon" /></div><div className="pulse-bars">{[18, 38, 26, 52, 34, 60, 42, 78, 55, 72, 63, 88].map((height, index) => <i key={index} style={{ height: `${height}%`, animationDelay: `${index * 70}ms` }} />)}</div><div className="pulse-caption"><span>{displayEvents.length} tracked events</span><strong>{metrics.avg_node_ms || 146}ms avg</strong></div></section>
     </div>
     <div className="monitor-operations-grid">
-       <section className="visual-panel inspector-visual"><div className="visual-panel-head"><div><span>HARNESS / INSPECTOR</span><h2>{currentAgentMeta.label}</h2></div><span className="compliance-badge"><ShieldCheck size={13} /> passed</span></div><div className="inspector-agent-line"><span className={`directory-agent-icon ${currentAgentMeta.color}`}><AgentIcon size={16} /></span><span><strong>{currentAgentMeta.role}</strong><small>{currentAgentOutput?.headline || "最近一次运行已完成"}</small></span></div><div className="inspector-skills">{(currentAgentMeta.skills || []).map((skill) => <span key={skill}>{skill}</span>)}</div><div className="inspector-copy">{currentAgentOutput?.summary || "最近一次客服处理已完成，Harness 已通过输出字段和风险边界检查。"}</div><div className="inspector-stats"><span><Clock3 size={14} /> {displayDuration}ms</span><span><Database size={14} /> {ragHits.length} RAG hits</span><span><ShieldCheck size={14} /> supervised</span></div></section>
+       <section className="visual-panel inspector-visual"><div className="visual-panel-head"><div><span>HARNESS / INSPECTOR</span><h2>{currentAgentMeta.label}</h2></div><span className="compliance-badge"><ShieldCheck size={13} /> passed</span></div><div className="inspector-agent-line"><span className={`directory-agent-icon ${currentAgentMeta.color}`}><AgentIcon size={16} /></span><span><strong>{currentAgentMeta.role}</strong><small>{currentAgentOutput?.headline || "最近一次运行已完成"}</small></span></div><div className="inspector-skills">{(currentAgentMeta.skills || []).map((skill) => <span key={skill}>{skill}</span>)}</div><div className="inspector-copy"><span>{currentAgentOutput?.summary || "最近一次客服处理已完成，Harness 已通过输出字段和风险边界检查。"}</span><small className="inspector-provider">生成方式：{currentAgentOutput?.provider === "deepseek" ? `DeepSeek / ${currentAgentOutput.model || "configured model"}` : currentAgentOutput?.provider_error ? `local-fallback · ${currentAgentOutput.provider_error}` : "local-fallback"}</small></div><div className="inspector-stats"><span><Clock3 size={14} /> {displayDuration}ms</span><span><Database size={14} /> {ragHits.length} RAG hits</span><span><ShieldCheck size={14} /> supervised</span></div></section>
       <section className="visual-panel live-events-visual"><div className="visual-panel-head"><div><span>03 / OBSERVE</span><h2>实时 Harness 事件</h2></div><span className="event-count"><Activity size={13} /> {displayEvents.length}</span></div><div className="live-event-list">{displayLatestEvents.slice(0, 7).map((event) => <div className="live-event-item" key={`${event.id}-${event.timestamp}`}><span className={`event-dot ${event.status}`} /><span><strong>{event.agent || event.node || "system"}</strong><small>{event.message}</small>{eventContext(event) && <em>{eventContext(event)}</em>}</span><time>{event.duration_ms ? `${event.duration_ms}ms` : "now"}</time></div>)}</div></section>
     </div>
   </div>;
@@ -776,8 +819,67 @@ function MonitorStatus({ status }) {
 }
 
 function ProductPreview({ run, isRunning }) {
+  const [activeView, setActiveView] = useState("reply");
+  const [copied, setCopied] = useState(false);
   const output = run?.final_output;
-  return <div className="product-preview"><div className="preview-topbar"><div className="preview-brand"><span>F</span><strong>{output?.title?.split(" ")[0] || "ForgeFlow"}</strong></div><div className="preview-tabs"><span className="active">Overview</span><span>Insights</span><span>Runs</span></div><span className="preview-user">YC</span></div><div className="preview-body"><div className="preview-greeting"><div><small>Wednesday · 09:42</small><h3>{isRunning ? "Generating your workspace..." : "Good morning, Yao"}</h3><p>{isRunning ? "The three agents are turning your brief into a product surface." : output?.tagline || "A calm snapshot of your product system."}</p></div><button><Plus size={13} /> Add signal</button></div><div className="preview-stats"><PreviewStat label="Agent health" value={isRunning ? "running" : "92%"} trend={isRunning ? "streaming" : "↑ 8.4%"} color="teal" /><PreviewStat label="Context recall" value={run?.retrieved_context?.length || 0} trend="local hits" color="violet" /><PreviewStat label="Guardrails" value={run?.status === "completed" ? "4/4" : "ready"} trend="supervised" color="yellow" /></div><div className="preview-columns"><div className="preview-card preview-chart"><div className="preview-card-head"><span>Execution pulse</span><MoreDots /></div><div className="chart-labels"><span>planning</span><span>research</span><span>builder</span><span>qa</span></div><div className="pulse-chart"><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></div><div className="chart-foot"><span>Last 12 node events</span><strong>{run?.events?.length || 0} tracked</strong></div></div><div className="preview-card preview-insights"><div className="preview-card-head"><span>Live signals</span><span className="signal-count">{output?.checks?.length || 3}</span></div>{(output?.checks || [{ label: "Connect a prompt", detail: "start your first supervised run" }, { label: "RAG context ready", detail: "10 local knowledge notes" }, { label: "Memory layer ready", detail: "MEMORY.md + runs.jsonl" }]).slice(0, 3).map((item, index) => <div className="signal-row" key={item.label}><span className={`signal-mark signal-${index}`}><Check size={12} /></span><span><strong>{item.label}</strong><small>{item.detail || "guardrail check passed"}</small></span><ArrowRight size={13} /></div>)}</div></div></div></div>;
+  const reply = output?.customer_reply || "";
+  const routeNodes = [
+    ["planning", "Planning"],
+    ["intent_agent", "Intent"],
+    ["research_agent", "Research"],
+    ["builder_agent", "Builder"],
+    ["qa_agent", "QA"],
+    ["reflection_agent", "Reflection"],
+  ];
+  const getNodeStatus = (node) => {
+    if (!run) return "待运行";
+    if (run.events?.some((event) => event.node === node && event.status === "completed")) return "已完成";
+    if (run.events?.some((event) => event.node === node && event.status === "running")) return "处理中";
+    return "等待中";
+  };
+  const pulseValues = (run?.events || []).slice(-8).map((event) => Math.min(90, Math.max(24, event.duration_ms ? event.duration_ms / 3 : 34)));
+  const copyReply = async () => {
+    if (!reply) return;
+    try {
+      await navigator.clipboard.writeText(reply);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  };
+  const signals = output?.checks || [
+    { label: "等待客户问题", detail: "发送一条客服问题开始运行" },
+    { label: "RAG context ready", detail: "本地知识库可用" },
+    { label: "Memory layer ready", detail: "运行结果会保存到项目记忆" },
+  ];
+  return <div className="product-preview product-preview-live">
+    <div className="preview-topbar">
+      <div className="preview-brand"><span>F</span><strong>客服结果</strong></div>
+      <div className="preview-tabs" role="tablist">
+        {[["reply", "回复"], ["route", "线路"], ["context", "上下文"]].map(([id, label]) => <button key={id} className={activeView === id ? "active" : ""} onClick={() => setActiveView(id)} role="tab" aria-selected={activeView === id}>{label}</button>)}
+      </div>
+      <span className="preview-user">{output?.llm_provider === "deepseek" ? "DS" : "FF"}</span>
+    </div>
+    <div className="preview-body">
+      <div className="preview-greeting">
+        <div><small>{run?.run_id ? `Run ${run.run_id}` : "OUTPUT / PREVIEW"}</small><h3>{isRunning ? "正在生成客服结果..." : output ? "本轮客服回复已生成" : "等待客户问题"}</h3><p>{isRunning ? "Intent、Research、Builder、QA 和 Reflection 正在运行。" : output?.tagline || "发送订单、物流或退款问题，查看真实运行结果。"}</p></div>
+        <button className="preview-copy-button" onClick={copyReply} disabled={!reply}><Copy size={13} />{copied ? "已复制" : "复制回复"}</button>
+      </div>
+      <div className="preview-stats">
+        <PreviewStat label="生成方式" value={output?.llm_provider === "deepseek" ? "DeepSeek" : "Fallback"} trend={output?.llm_model || "未配置 API Key"} color="teal" />
+        <PreviewStat label="Context recall" value={run?.retrieved_context?.length || 0} trend="RAG hits" color="violet" />
+        <PreviewStat label="Guardrails" value={run?.status === "completed" ? "4/4" : "ready"} trend="Harness supervised" color="yellow" />
+      </div>
+      {activeView === "reply" && <div className="preview-live-result"><div className="preview-card-head"><span>客服回复</span><span className="preview-provider">{output?.llm_provider === "deepseek" ? "DeepSeek generated" : "Local fallback"}</span></div><p>{reply || "还没有生成回复。请从 Chat 输入一条客户问题。"}</p><div className="preview-id-row"><span>订单 {output?.order_id || "等待生成"}</span><span>物流 {output?.tracking_id || "等待生成"}</span></div></div>}
+      {activeView === "route" && <div className="preview-route-list">{routeNodes.map(([node, label], index) => <div className="preview-route-row" key={node}><span>{index + 1}</span><strong>{label}</strong><small>{getNodeStatus(node)}</small></div>)}</div>}
+      {activeView === "context" && <div className="preview-context-grid"><div><span>Conversation</span><strong>{run?.conversation_id || "等待生成"}</strong></div><div><span>意图</span><strong>{output?.intent_label || "等待识别"}</strong></div><div><span>RAG 来源</span><strong>{run?.retrieved_context?.map((item) => item.id).join("、") || "等待检索"}</strong></div><div><span>数据类型</span><strong>{output?.data_kind || "合成演示数据"}</strong></div></div>}
+      <div className="preview-columns">
+        <div className="preview-card preview-chart"><div className="preview-card-head"><span>Execution pulse</span><MoreDots /></div><div className="chart-labels"><span>planning</span><span>research</span><span>builder</span><span>qa</span></div><div className="pulse-chart">{(pulseValues.length ? pulseValues : [30, 44, 36, 52, 42, 60, 48, 68]).map((height, index) => <i key={index} style={{ height: `${height}%` }} />)}</div><div className="chart-foot"><span>当前事件</span><strong>{run?.events?.length || 0} tracked</strong></div></div>
+        <div className="preview-card preview-insights"><div className="preview-card-head"><span>Live signals</span><span className="signal-count">{signals.length}</span></div>{signals.slice(0, 3).map((item, index) => <div className="signal-row" key={item.label}><span className={`signal-mark signal-${index}`}><Check size={12} /></span><span><strong>{item.label}</strong><small>{item.detail || "guardrail check passed"}</small></span><ArrowRight size={13} /></div>)}</div>
+      </div>
+    </div>
+  </div>;
 }
 
 function PreviewStat({ label, value, trend, color }) {

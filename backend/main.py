@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .deepseek import deepseek_client
 from .graph import AGENT_META, execute_run
 from .models import RagQuery, RunRequest, RunResponse
 from .rag import rag
@@ -44,6 +45,7 @@ async def health() -> dict[str, Any]:
         "service": "forgeflow-agent-harness",
         "langgraph": True,
         "agents": list(AGENT_META.values()),
+        "llm": deepseek_client.status(),
         "timestamp": utc_now(),
     }
 
@@ -81,7 +83,9 @@ async def create_run(request: RunRequest) -> RunResponse:
             "metadata": {},
         },
     )
-    tasks[run_id] = asyncio.create_task(asyncio.to_thread(execute_run, initial))
+    task = asyncio.create_task(asyncio.to_thread(execute_run, initial))
+    tasks[run_id] = task
+    task.add_done_callback(lambda _: tasks.pop(run_id, None))
     return RunResponse(run_id=run_id, status="queued")
 
 

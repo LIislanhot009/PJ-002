@@ -737,6 +737,15 @@ html, body, #root { height: 100%; overflow: hidden; }
 .directory-preview-card .preview-card-head { font-size: 7px; }
 .directory-preview-card .chart-labels { margin: 10px 0 4px; font-size: 5px; }
 .directory-preview-card .pulse-chart { height: 38px; gap: 2px; }
+.directory-preview-card .preview-live-result { min-height: 88px; padding: 8px; }
+.directory-preview-card .preview-live-result p { min-height: 37px; margin: 7px 0; font-size: 7px; line-height: 1.45; }
+.directory-preview-card .preview-id-row { gap: 4px; font-size: 6px; }
+.directory-preview-card .preview-route-list { gap: 2px; padding: 5px 7px; }
+.directory-preview-card .preview-route-row { grid-template-columns: 14px 1fr auto; gap: 4px; padding: 4px 0; font-size: 7px; }
+.directory-preview-card .preview-context-grid { grid-template-columns: 1fr 1fr; gap: 4px; padding: 6px; }
+.directory-preview-card .preview-context-grid div { padding: 4px; }
+.directory-preview-card .preview-context-grid span,
+.directory-preview-card .preview-context-grid strong { font-size: 6px; }
 .directory-preview-card .chart-foot { margin-top: 5px; font-size: 6px; }
 .directory-preview-card .signal-count { min-width: 12px; height: 12px; font-size: 6px; }
 .directory-preview-card .signal-row { grid-template-columns: 14px 1fr 8px; gap: 4px; padding: 3px 1px; }
@@ -744,6 +753,29 @@ html, body, #root { height: 100%; overflow: hidden; }
 .directory-preview-card .signal-mark svg { width: 8px; height: 8px; }
 .directory-preview-card .signal-row strong { font-size: 6px; }
 .directory-preview-card .signal-row small { margin-top: 1px; font-size: 5px; }
+
+.preview-tabs { align-items: stretch; }
+.preview-tabs button { position: relative; display: flex; align-items: center; padding: 0; color: #949ca2; background: transparent; font-size: inherit; }
+.preview-tabs button.active { color: #2d363d; font-weight: 700; }
+.preview-tabs button.active::after { content: ""; position: absolute; right: 0; bottom: 0; left: 0; height: 2px; background: #4fb9a6; }
+.preview-copy-button { height: 28px; display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid #d8dddf; border-radius: 5px; color: #458d81; background: #ffffff; font-size: 9px; font-weight: 700; }
+.preview-copy-button:hover { border-color: #9ed7cb; background: #f1faf7; }
+.preview-copy-button:disabled { color: #aab4b9; background: #f4f6f7; cursor: not-allowed; }
+.preview-live-result { min-height: 118px; margin-bottom: 9px; padding: 12px; border: 1px solid #e4e8eb; border-radius: 7px; background: #ffffff; }
+.preview-live-result p { margin: 10px 0 12px; color: #475a65; font-size: 11px; line-height: 1.7; }
+.preview-provider { color: #4f9184; font-size: 8px; }
+.preview-id-row { display: flex; flex-wrap: wrap; gap: 7px; color: #778a95; font-size: 8px; }
+.preview-id-row span { padding: 4px 6px; border: 1px solid #dce9e6; border-radius: 4px; background: #f7fcfa; }
+.preview-route-list { display: grid; gap: 5px; margin-bottom: 9px; padding: 10px 12px; border: 1px solid #e4e8eb; border-radius: 7px; background: #ffffff; }
+.preview-route-row { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #edf1f3; }
+.preview-route-row:last-child { border-bottom: 0; }
+.preview-route-row > span { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: #4f9184; background: #e7f6f2; font-size: 8px; }
+.preview-route-row strong { color: #475a65; font-size: 9px; }
+.preview-route-row small { color: #2f9361; font-size: 8px; }
+.preview-context-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 9px; padding: 10px; border: 1px solid #e4e8eb; border-radius: 7px; background: #ffffff; }
+.preview-context-grid div { min-width: 0; display: grid; gap: 4px; padding: 7px; border: 1px solid #edf1f3; border-radius: 5px; }
+.preview-context-grid span { color: #9aa7b1; font-size: 8px; }
+.preview-context-grid strong { overflow: hidden; color: #536673; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 720px) {
   .monitor-request-context { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -17,10 +17,12 @@ ForgeFlow 针对这个问题提供一个业务可用的客服 Copilot。客服�
 ## 技术结构
 
 - **Backend**：FastAPI + LangGraph `StateGraph`
-- **3 个 Agent**：
+- **Agent workflow**：
+  - `Intent agent`：优先调用 DeepSeek 做意图识别；无 Key 时使用本地规则降级
   - `Research agent`：基于自造知识库做本地 TF-IDF RAG 检索
-  - `Builder agent`：把研究上下文生成成产品结构、页面和交互规格
-  - `QA agent`：检查主流程、响应式、错误恢复和风险边界
+  - `Builder agent`：优先调用 DeepSeek 生成客服回复；无 Key 时使用安全模板降级
+  - `QA agent`：检查 ID、上下文、敏感信息边界和回复完整性
+  - `Reflection agent`：复盘结果并修正最终回复
 - **Harness**：包裹每个 LangGraph 节点，记录开始/完成/失败、耗时、guardrail 和输出摘要
 - **Memory**：使用 Claude Code 风格的 `memory/MEMORY.md` + `memory/runs.jsonl`
 - **Frontend**：React + Vite + lucide-react
@@ -50,6 +52,18 @@ npm run dev
 ```
 
 打开 `http://127.0.0.1:5173`。
+
+### 启用 DeepSeek
+
+项目不会把 API Key 写进代码。PowerShell 中先设置环境变量，再启动服务：
+
+```powershell
+$env:DEEPSEEK_API_KEY="你的 DeepSeek Key"
+$env:DEEPSEEK_MODEL="deepseek-v4-flash"
+.\start-demo.ps1
+```
+
+未配置 Key 时系统仍可离线运行，监控和结果预览会标记为 `local-fallback`。Render 部署时，在服务的 `Environment` 页面添加同名 `DEEPSEEK_API_KEY` 和可选的 `DEEPSEEK_MODEL`，不要把真实 Key 提交到 GitHub。
 
 ## 交互重点
 

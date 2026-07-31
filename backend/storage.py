@@ -76,6 +76,7 @@ class ClaudeMemory:
 
     def __init__(self, root: Path = MEMORY_DIR) -> None:
         self.root = root
+        self._lock = threading.RLock()
         self.root.mkdir(parents=True, exist_ok=True)
         self.memory_md = self.root / "MEMORY.md"
         self.memory_jsonl = self.root / "runs.jsonl"
@@ -110,16 +111,18 @@ class ClaudeMemory:
             "final_output": run.get("final_output", {}),
             "status": run.get("status"),
         }
-        with self.memory_jsonl.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-        summary = self._summary(record)
-        with self.memory_md.open("a", encoding="utf-8") as handle:
-            handle.write(f"\n## {record['timestamp']} · {record['project_name']}\n\n{summary}\n")
+        with self._lock:
+            with self.memory_jsonl.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            summary = self._summary(record)
+            with self.memory_md.open("a", encoding="utf-8") as handle:
+                handle.write(f"\n## {record['timestamp']} · {record['project_name']}\n\n{summary}\n")
 
     def read_recent(self, limit: int = 8) -> list[dict[str, Any]]:
         if not self.memory_jsonl.exists():
             return []
-        rows = self.memory_jsonl.read_text(encoding="utf-8").splitlines()
+        with self._lock:
+            rows = self.memory_jsonl.read_text(encoding="utf-8").splitlines()
         return [json.loads(row) for row in rows[-limit:]][::-1]
 
     @staticmethod

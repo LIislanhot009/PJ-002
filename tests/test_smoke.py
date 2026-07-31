@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import unittest
 import uuid
+from unittest.mock import patch
 
 from backend.graph import classify_intent, execute_run, make_customer_context
 from backend.rag import rag
-from backend.storage import run_store
+from backend.storage import memory_store, run_store
 
 
 class ForgeFlowSmokeTests(unittest.TestCase):
@@ -37,7 +38,8 @@ class ForgeFlowSmokeTests(unittest.TestCase):
         }
         run_store.create(run_id, initial)
 
-        result = execute_run(initial)
+        with patch.object(memory_store, "append_run"):
+            result = execute_run(initial)
 
         context = result["customer_context"]
         reply = result["final_output"]["customer_reply"]

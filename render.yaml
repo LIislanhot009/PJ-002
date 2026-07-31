@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: forgeflow-agent-console
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: CORS_ORIGINS
+        value: "*"

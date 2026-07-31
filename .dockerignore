@@ -1,0 +1,8 @@
+.git
+.gitignore
+frontend/node_modules
+frontend/dist
+backend/__pycache__
+tests
+memory/runs.jsonl
+*.pyc

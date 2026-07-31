@@ -1,0 +1,136 @@
+[
+  {
+    "id": "kb-001",
+    "title": "金融产品的首屏应该回答三个问题",
+    "tags": "金融 现金流 首页 指标 信息层级",
+    "content": "用户打开财务产品时，首屏优先需要知道现在有多少钱、最近发生了什么变化、下一步应该做什么。不要同时展示所有账户和所有分类。",
+    "source": "ForgeFlow Product Notes"
+  },
+  {
+    "id": "kb-002",
+    "title": "AI 洞察需要给出来源与动作",
+    "tags": "AI 洞察 可解释 建议 信任",
+    "content": "AI 生成的建议应该说明依据、置信度和可执行动作。避免只给出结论不解释原因，也要允许用户忽略或撤销建议。",
+    "source": "ForgeFlow AI UX Notes"
+  },
+  {
+    "id": "kb-003",
+    "title": "空状态不是错误页",
+    "tags": "空状态 onboarding 加载 错误",
+    "content": "首次进入、暂无数据和连接失败应该分别设计。空状态要告诉用户为什么为空、可以做什么、执行后会得到什么反馈。",
+    "source": "ForgeFlow Interface Notes"
+  },
+  {
+    "id": "kb-004",
+    "title": "Agent 工作流需要可观测节点",
+    "tags": "Agent LangGraph 监控 Harness 节点",
+    "content": "每个 Agent 节点都应该记录开始时间、结束时间、输入摘要、输出摘要、guardrail 结果和失败原因。用户不必看到全部日志，但需要看到系统在做什么。",
+    "source": "ForgeFlow Agent Runtime Notes"
+  },
+  {
+    "id": "kb-005",
+    "title": "RAG 结果要能回溯",
+    "tags": "RAG 检索 知识库 引用 分数",
+    "content": "检索增强生成的上下文要展示来源、相关度和被使用的片段。用户可以把某一条上下文加入当前运行，也可以移除不相关结果。",
+    "source": "ForgeFlow Retrieval Notes"
+  },
+  {
+    "id": "kb-006",
+    "title": "响应式工作台优先保证主任务",
+    "tags": "响应式 移动端 布局 工作台",
+    "content": "桌面端可以并列展示输入、流程、监控和预览；移动端应该优先保留输入、当前节点和关键结果，其他信息折叠到详情中。",
+    "source": "ForgeFlow Responsive Notes"
+  },
+  {
+    "id": "kb-007",
+    "title": "Harness 应该限制高风险动作",
+    "tags": "Harness guardrail 审批 风险 发布",
+    "content": "涉及外部发布、数据写入和删除的 Agent 动作必须经过 Harness 检查。简单动作自动通过，高风险动作进入人工批准队列。",
+    "source": "ForgeFlow Safety Notes"
+  },
+  {
+    "id": "kb-008",
+    "title": "记忆要分为事实与运行摘要",
+    "tags": "记忆 上下文 Claude Code MEMORY.md JSONL",
+    "content": "长期上下文适合写入可读的 MEMORY.md，单次运行细节适合追加到结构化 JSONL。每次运行应该保存目标、决策、召回上下文和下一步。",
+    "source": "ForgeFlow Memory Notes"
+  },
+  {
+    "id": "kb-009",
+    "title": "优先用结构化计划降低 Agent 漂移",
+    "tags": "planning 规划 多 Agent 任务拆解",
+    "content": "先把目标拆成步骤、产物和验收标准，再按依赖顺序执行 Agent，可以降低多个 Agent 之间的上下文丢失和重复工作。",
+    "source": "ForgeFlow Planning Notes"
+  },
+  {
+    "id": "kb-010",
+    "title": "监控面板应该围绕决策而不是日志数量",
+    "tags": "监控 可观测性 metrics dashboard Agent",
+    "content": "监控面板优先显示当前运行状态、节点耗时、失败率、guardrail 通过率和上下文来源，而不是把所有原始日志堆在一起。",
+    "source": "ForgeFlow Operations Notes"
+  },
+  {
+    "id": "cs-demo-001",
+    "title": "模拟订单待发货处理规则",
+    "tags": "客服 订单 待发货 发货 订单号 演示数据",
+    "content": "当客户询问订单为什么还没有发货时，先核对演示订单 ID，再说明当前状态、预计发货时间和下一步。订单号使用本地生成的 FF 开头模拟 ID，不代表真实订单。",
+    "source": "ForgeFlow Customer Service Demo",
+    "data_kind": "模拟数据"
+  },
+  {
+    "id": "cs-demo-002",
+    "title": "模拟物流轨迹与配送节点",
+    "tags": "客服 物流 快递 配送 运输中 分拨中心 物流号 演示数据",
+    "content": "演示物流单号使用 SF 开头的本地生成 ID。可展示待揽收、运输中、到达分拨中心和派送中等状态；若客户继续追问，应沿用同一个 conversation_id 下的物流号。",
+    "source": "ForgeFlow Customer Service Demo",
+    "data_kind": "模拟数据"
+  },
+  {
+    "id": "cs-demo-003",
+    "title": "物流显示签收但客户未收到",
+    "tags": "客服 物流 签收 未收到 丢件 配送异常 投诉",
+    "content": "对于物流显示签收但客户没有收到的情况，先确认签收时间和地址，再建议核对门卫、前台和家人代收信息。没有核实前不要直接断言包裹丢失。",
+    "source": "ForgeFlow Customer Service Demo",
+    "data_kind": "模拟数据"
+  },
+  {
+    "id": "cs-demo-004",
+    "title": "退款与退货申请判断",
+    "tags": "客服 退款 退货 取消订单 售后 商品状态",
+    "content": "退款问题需要确认订单状态、商品是否发货、是否使用以及是否存在破损。演示回复可以说明申请路径和所需信息，不执行真实退款操作。",
+    "source": "ForgeFlow Customer Service Demo",
+    "data_kind": "模拟数据"
+  },
+  {
+    "id": "cs-demo-005",
+    "title": "商品破损与少件投诉处理",
+    "tags": "客服 投诉 破损 少件 商品异常 售后 证据",
+    "content": "商品破损或少件时，客服应先表达歉意，再收集订单 ID、异常类型和照片等必要信息。只在信息完整后给出补发、退款或进一步核验建议。",
+    "source": "ForgeFlow Customer Service Demo",
+    "data_kind": "模拟数据"
+  },
+  {
+    "id": "cs-demo-006",
+    "title": "多轮客服对话上下文记忆",
+    "tags": "客服 多轮对话 conversation_id 上下文 订单号 物流号",
+    "content": "同一 conversation_id 的连续提问要沿用相同的模拟订单号和物流单号。第 2 轮开始优先回答客户的新问题，同时保留前一轮已确认的订单上下文。",
+    "source": "ForgeFlow Customer Service Demo",
+    "data_kind": "模拟数据"
+  },
+  {
+    "id": "cs-demo-007",
+    "title": "客服意图识别标签",
+    "tags": "客服 Intent agent 意图识别 订单查询 物流查询 退款 投诉",
+    "content": "客服意图分为订单状态查询、物流配送查询、退款退货、投诉商品异常和一般咨询。Intent agent 先识别意图，再把请求路由给 Research agent。",
+    "source": "ForgeFlow Customer Service Demo",
+    "data_kind": "模拟数据"
+  },
+  {
+    "id": "cs-demo-008",
+    "title": "客服回复反思与安全边界",
+    "tags": "客服 Reflection agent 反思 QA Harness 安全边界 模拟数据",
+    "content": "Reflection agent 需要检查回复是否覆盖客户意图、是否保留可复核的演示 ID、是否延续多轮上下文，以及是否明确当前数据是模拟数据。未通过时只修正回复，不执行真实业务动作。",
+    "source": "ForgeFlow Customer Service Demo",
+    "data_kind": "模拟数据"
+  }
+]

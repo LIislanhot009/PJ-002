@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 .venv/
 memory/runs.jsonl
+新建文本文档.txt

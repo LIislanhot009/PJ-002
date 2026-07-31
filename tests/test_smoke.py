@@ -127,9 +127,15 @@ class ForgeFlowSmokeTests(unittest.TestCase):
         }
         run_store.create(run_id, initial)
 
+        memory_write_statuses: list[str] = []
+
+        def capture_memory_write(_: dict) -> None:
+            stored_run = run_store.get(run_id)
+            memory_write_statuses.append(stored_run["status"])
+
         with (
             patch.dict(os.environ, {"FORGEFLOW_DISABLE_LLM": "1"}),
-            patch.object(memory_store, "append_run"),
+            patch.object(memory_store, "append_run", side_effect=capture_memory_write),
         ):
             result = execute_run(initial)
 
@@ -143,6 +149,8 @@ class ForgeFlowSmokeTests(unittest.TestCase):
             {event["agent"] for event in result["events"] if event.get("agent")},
         )
         self.assertEqual(result["status"], "completed")
+        self.assertEqual(memory_write_statuses, ["running"])
+        self.assertEqual(run_store.get(run_id)["status"], "completed")
 
     def test_customer_context_is_stable(self) -> None:
         self.assertEqual(

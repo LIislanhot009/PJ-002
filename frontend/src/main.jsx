@@ -310,6 +310,7 @@ function App() {
         if (payload.status && payload.message) {
           setEvents((previous) => [...previous, payload]);
           if (payload.agent) setSelectedAgent(payload.agent);
+          if (payload.type === "memory") refreshMemory();
         } else if (payload.status) {
           setRun((previous) => ({ ...previous, status: payload.status }));
         }

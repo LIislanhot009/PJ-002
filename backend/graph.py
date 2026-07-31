@@ -510,7 +510,7 @@ def execute_run(initial: AgentState) -> AgentState:
         result["status"] = "completed"
         run_store.update(
             run_id,
-            status="completed",
+            status="running",
             conversation_id=result.get("conversation_id"),
             turn=result.get("turn"),
             prompt=result.get("prompt"),
@@ -522,6 +522,7 @@ def execute_run(initial: AgentState) -> AgentState:
             final_output=result.get("final_output"),
             metrics=result.get("metrics"),
         )
+        memory_store.append_run({**result, "status": "completed"})
         emit(
             result,
             "memory",
@@ -532,7 +533,7 @@ def execute_run(initial: AgentState) -> AgentState:
             turn=result.get("turn"),
             data_kind=result.get("customer_context", {}).get("data_kind", "模拟数据"),
         )
-        memory_store.append_run({**result, "status": "completed"})
+        run_store.update(run_id, status="completed")
         return result
     except Exception as error:
         run_store.update(run_id, status="failed", error=str(error))

@@ -6,7 +6,7 @@
 
 ## 技术选型
 
-前端采用 React + Vite，使用 Chat 优先的响应式布局，提供客服会话、Agent 监控、RAG 数据和项目记忆页面。后端采用 FastAPI，使用 LangGraph 编排 Planning、Intent、Research、Builder、QA 和 Reflection 节点。Intent 和 Builder 优先调用 DeepSeek，未配置 Key 时安全降级到本地规则和模板。RAG 使用本地 TF-IDF 检索，Harness 负责记录节点状态、耗时、输出字段和风险校验，Memory 使用 `MEMORY.md` 与 `runs.jsonl` 保存上下文。项目通过 Docker 部署到 Render。
+前端采用 React + Vite，使用 Chat 优先的响应式布局，提供客服会话、Agent 监控、RAG 数据和项目记忆页面。后端采用 FastAPI，使用 LangGraph 编排 Planning、Intent、Research、Builder、QA 和 Reflection 节点。Intent 和 Builder 优先调用 DeepSeek，未配置 Key 时安全降级到基于 RAG 事实的 grounded fallback，不由前端生成假回复。RAG 使用本地 TF-IDF 检索，Harness 负责记录节点状态、执行 ID、输入摘要、输出摘要、耗时和风险校验，Memory 使用 `MEMORY.md` 与 `runs.jsonl` 保存上下文。项目通过 Docker 部署到 Render。
 
 ## 任务拆分
 

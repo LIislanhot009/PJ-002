@@ -13,6 +13,8 @@ AGENT_META = {
         "label": "Intent agent",
         "short": "意图识别 Agent",
         "role": "识别客户意图并路由处理",
+        "description": "从客户自然语言中识别业务意图，并决定后续处理方向。",
+        "flow_role": "识别客户意图",
         "skills": ["问题分类", "路由判断"],
         "color": "blue",
     },
@@ -21,6 +23,8 @@ AGENT_META = {
         "label": "Research agent",
         "short": "知识检索 Agent",
         "role": "检索知识库和订单上下文",
+        "description": "检索合规知识片段，并把同一会话的演示订单上下文带入本轮。",
+        "flow_role": "检索知识与订单上下文",
         "skills": ["知识库检索", "来源合规审计"],
         "color": "teal",
     },
@@ -29,6 +33,8 @@ AGENT_META = {
         "label": "Builder agent",
         "short": "回复生成 Agent",
         "role": "组织客服回复和下一步动作",
+        "description": "根据意图、检索事实和对话历史生成可以直接发给客户的回复。",
+        "flow_role": "组织回复与下一步",
         "skills": ["自然语言回复", "订单上下文拼接"],
         "color": "violet",
     },
@@ -37,6 +43,8 @@ AGENT_META = {
         "label": "QA agent",
         "short": "质量检查 Agent",
         "role": "检查回复质量和风险边界",
+        "description": "检查回复是否覆盖意图、保留可复核 ID，并遵守演示数据边界。",
+        "flow_role": "检查回复质量",
         "skills": ["回复风险检查", "ID 一致性校验"],
         "color": "yellow",
     },
@@ -45,10 +53,43 @@ AGENT_META = {
         "label": "Reflection agent",
         "short": "反思 Agent",
         "role": "复盘本轮结果并修正回复",
+        "description": "综合 QA 结果复盘本轮回答，必要时修正后再交付给客服。",
+        "flow_role": "反思并修正回复",
         "skills": ["多轮复盘", "回复修正"],
         "color": "coral",
     },
 }
+
+WORKFLOW_ROUTE = [
+    {
+        "id": "planning",
+        "node": "planning",
+        "label": "Planning",
+        "role": "拆解问题与验收目标",
+        "type": "planner",
+        "color": "planning",
+    },
+    *[
+        {
+            "id": meta["id"],
+            "node": node,
+            "label": meta["label"].replace(" agent", ""),
+            "role": meta["flow_role"],
+            "type": "agent",
+            "agent": meta["id"],
+            "color": meta["color"],
+        }
+        for node, meta in AGENT_META.items()
+    ],
+    {
+        "id": "memory",
+        "node": "memory",
+        "label": "Memory",
+        "role": "持久化本轮项目上下文",
+        "type": "memory",
+        "color": "memory",
+    },
+]
 
 
 def emit(state: AgentState, event_type: str, status: str, message: str, **metadata: Any) -> None:
@@ -68,6 +109,39 @@ def emit(state: AgentState, event_type: str, status: str, message: str, **metada
     run_store.add_event(state["run_id"], event)
 
 
+def _input_summary(state: AgentState) -> dict[str, Any]:
+    return {
+        "prompt": state.get("prompt", "")[:240],
+        "conversation_id": state.get("conversation_id"),
+        "turn": state.get("turn", 1),
+        "intent": state.get("intent"),
+        "retrieved_context_count": len(state.get("retrieved_context", [])),
+        "available_output_agents": sorted(state.get("agent_outputs", {}).keys()),
+    }
+
+
+def _output_summary(result: dict[str, Any], agent: str | None) -> dict[str, Any]:
+    output = result.get("agent_outputs", {}).get(agent or "", {})
+    if output:
+        summary: dict[str, Any] = {
+            "headline": output.get("headline"),
+            "summary": output.get("summary"),
+        }
+        for key in ("intent", "confidence", "rag_hits", "score", "revised", "provider"):
+            if key in output:
+                summary[key] = output[key]
+        return summary
+    if result.get("plan"):
+        return {
+            "headline": "Plan created",
+            "summary": result["plan"].get("summary"),
+            "step_count": len(result["plan"].get("steps", [])),
+        }
+    if result.get("status") == "completed":
+        return {"headline": "Memory persisted", "summary": "Run context appended to project memory."}
+    return {"output_keys": sorted(result.keys())}
+
+
 class Harness:
     """Supervises each LangGraph node with timing, guardrails and durable events."""
 
@@ -82,6 +156,7 @@ class Harness:
     ) -> dict[str, Any]:
         started = time.perf_counter()
         label = AGENT_META.get(self.agent or "", {}).get("label", self.node)
+        execution_id = f"{state['run_id']}:{self.node}:turn-{state.get('turn', 1)}"
         emit(
             state,
             "node",
@@ -89,6 +164,8 @@ class Harness:
             f"Harness 已接管 {label} 的执行线路",
             node=self.node,
             agent=self.agent,
+            execution_id=execution_id,
+            input_summary=_input_summary(state),
         )
         try:
             result = fn(state)
@@ -99,6 +176,7 @@ class Harness:
                 "duration_ms": duration_ms,
                 "guardrail": "passed",
                 "output_keys": list(result.keys()),
+                "execution_id": execution_id,
             }
             merged["metrics"] = metrics
             emit(
@@ -110,6 +188,9 @@ class Harness:
                 agent=self.agent,
                 duration_ms=duration_ms,
                 guardrail="passed",
+                execution_id=execution_id,
+                input_summary=_input_summary(state),
+                output_summary=_output_summary(result, self.agent),
             )
             result["events"] = merged.get("events", [])
             result["metrics"] = metrics

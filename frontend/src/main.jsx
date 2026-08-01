@@ -86,22 +86,29 @@ const AGENTS = [
   },
 ];
 
-const DEFAULT_MONITOR_EVENTS = [
-  { id: "demo-1", type: "node", status: "completed", node: "planning", agent: "planning", message: "已拆解订单查询问题和客服处理目标", timestamp: "2026-07-31T09:42:18", duration_ms: 86 },
-  { id: "demo-2", type: "rag", status: "completed", node: "research_agent", agent: "research", message: "RAG 命中 4 条客服知识数据", timestamp: "2026-07-31T09:42:19", duration_ms: 164 },
-  { id: "demo-3", type: "node", status: "completed", node: "research_agent", agent: "research", message: "完成订单、物流和退款规则检索", timestamp: "2026-07-31T09:42:19", duration_ms: 142 },
-  { id: "demo-4", type: "node", status: "completed", node: "builder_agent", agent: "builder", message: "生成客服回复建议和人工升级路径", timestamp: "2026-07-31T09:42:20", duration_ms: 218 },
-  { id: "demo-5", type: "harness", status: "completed", node: "builder_agent", agent: "builder", message: "Harness 校验输出字段和风险边界", timestamp: "2026-07-31T09:42:20", duration_ms: 74 },
-  { id: "demo-6", type: "node", status: "completed", node: "qa_agent", agent: "qa", message: "通过客服主流程和转人工状态检查", timestamp: "2026-07-31T09:42:21", duration_ms: 121 },
-  { id: "demo-7", type: "memory", status: "completed", node: "memory", agent: "memory", message: "已保存本次客服处理上下文", timestamp: "2026-07-31T09:42:21", duration_ms: 32 },
-];
-
 const DEFAULT_CHAT_MESSAGES = [
   {
     role: "assistant",
     content: "您好，欢迎来找我～我可以帮您查订单、看物流、处理退款。如果问题比较复杂，我也会帮您转给人工客服。请问您现在遇到什么问题啦？",
   },
 ];
+
+const AGENT_ICONS = {
+  intent: BrainCircuit,
+  research: FileSearch,
+  builder: Layers3,
+  qa: ShieldCheck,
+  reflection: History,
+};
+
+function normalizeAgents(serverAgents) {
+  return (serverAgents || []).map((agent) => ({
+    ...(AGENTS.find((item) => item.id === agent.id) || {}),
+    ...agent,
+    flowRole: agent.flow_role || agent.role,
+    icon: AGENT_ICONS[agent.id] || BrainCircuit,
+  }));
+}
 
 function readStorage(key, fallback) {
   try {
@@ -125,6 +132,7 @@ function App() {
   const [run, setRun] = useState(() => readStorage("forgeflow-run", null));
   const [events, setEvents] = useState(() => readStorage("forgeflow-events", []));
   const [metrics, setMetrics] = useState({ total_runs: 0, active_runs: 0, completed_runs: 0, avg_node_ms: 0, guardrail_pass_rate: 100 });
+  const [agents, setAgents] = useState(AGENTS);
   const [memory, setMemory] = useState({ runs: [] });
   const [isRunning, setIsRunning] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState("research");
@@ -177,7 +185,11 @@ function App() {
   const refreshMetrics = async () => {
     try {
       const response = await fetch(`${API_BASE}/api/metrics`);
-      if (response.ok) setMetrics(await response.json());
+      if (response.ok) {
+        const data = await response.json();
+        setMetrics(data);
+        if (data.agents?.length) setAgents(normalizeAgents(data.agents));
+      }
     } catch {
       // The UI remains usable while the backend is starting.
     }
@@ -185,7 +197,7 @@ function App() {
 
   const refreshMemory = async () => {
     try {
-      const response = await fetch(`${API_BASE}/api/memory?limit=8`);
+      const response = await fetch(`${API_BASE}/api/memory?limit=8`, { cache: "no-store" });
       if (response.ok) setMemory(await response.json());
     } catch {
       // Empty memory is a valid first-run state.
@@ -234,6 +246,42 @@ function App() {
     )));
   };
 
+  const resolvePendingAssistant = (latestRun) => {
+    const finalOutput = latestRun?.final_output;
+    if (!finalOutput?.customer_reply) return;
+    setChatMessages((current) => {
+      const pendingIndex = current.findLastIndex?.(
+        (message) => message.role === "assistant" && message.pending,
+      );
+      if (pendingIndex === undefined || pendingIndex < 0) return current;
+      return current.map((message, index) => index === pendingIndex
+        ? {
+          ...message,
+          content: finalOutput.customer_reply,
+          pending: false,
+          intent: finalOutput.intent,
+          orderId: finalOutput.order_id,
+          trackingId: finalOutput.tracking_id,
+          turn: finalOutput.turn,
+        }
+        : message);
+    });
+  };
+
+  const refreshRunSnapshot = async (runId) => {
+    const response = await fetch(`${API_BASE}/api/runs/${runId}`, { cache: "no-store" });
+    if (!response.ok) return null;
+    const latest = await response.json();
+    setRun(latest);
+    setEvents(latest.events || []);
+    if (Array.isArray(latest.retrieved_context)) setRagHits(latest.retrieved_context);
+    return latest;
+  };
+
+  useEffect(() => {
+    resolvePendingAssistant(run);
+  }, [run?.run_id, run?.final_output?.customer_reply]);
+
   const sendChatMessage = (messageOverride) => {
     const content = (messageOverride ?? chatDraft).trim();
     if (!content || isRunning) return;
@@ -281,16 +329,18 @@ function App() {
       if (!response.ok) throw new Error("创建运行失败");
       const created = await response.json();
       setRun(created);
-      await subscribeToRun(created.run_id, assistantMessageId, runPrompt);
+      await subscribeToRun(created.run_id, assistantMessageId);
     } catch (error) {
       setRun({ status: "failed", error: error.message });
       setIsRunning(false);
-      if (assistantMessageId) updateAssistantMessage(assistantMessageId, getCustomerReply(runPrompt), { fallback: true });
+      if (assistantMessageId) {
+        updateAssistantMessage(assistantMessageId, "这次客服处理暂时没有完成，请稍后重试。", { fallback: true });
+      }
       showToast("无法连接 Agent Harness", "请确认后端运行在 8000 端口", "error");
     }
   };
 
-  const subscribeToRun = async (runId, assistantMessageId, fallbackPrompt) => {
+  const subscribeToRun = async (runId, assistantMessageId) => {
     const response = await fetch(`${API_BASE}/api/runs/${runId}/events`);
     if (!response.ok || !response.body) throw new Error("无法订阅运行事件");
     const reader = response.body.getReader();
@@ -307,10 +357,11 @@ function App() {
         const dataLine = chunk.split("\n").find((line) => line.startsWith("data:"));
         if (!dataLine) continue;
         const payload = JSON.parse(dataLine.slice(5).trim());
-        if (payload.status && payload.message) {
-          setEvents((previous) => [...previous, payload]);
-          if (payload.agent) setSelectedAgent(payload.agent);
-          if (payload.type === "memory") refreshMemory();
+          if (payload.status && payload.message) {
+            setEvents((previous) => [...previous, payload]);
+            if (payload.agent) setSelectedAgent(payload.agent);
+            if (payload.type === "rag") refreshRunSnapshot(runId);
+            if (payload.type === "memory") refreshMemory();
         } else if (payload.status) {
           setRun((previous) => ({ ...previous, status: payload.status }));
         }
@@ -319,14 +370,13 @@ function App() {
         }
       }
     }
-    const finalResponse = await fetch(`${API_BASE}/api/runs/${runId}`);
-    const finalRun = await finalResponse.json();
-    setRun(finalRun);
+    const finalRun = await refreshRunSnapshot(runId);
+    if (!finalRun) throw new Error("无法读取本次运行结果");
     setIsRunning(false);
     if (assistantMessageId) {
       updateAssistantMessage(
         assistantMessageId,
-        finalRun.final_output?.customer_reply || getCustomerReply(fallbackPrompt),
+        finalRun.final_output?.customer_reply || "这次客服处理没有生成可交付回复，请查看监控中心的失败节点。",
         {
           intent: finalRun.final_output?.intent,
           orderId: finalRun.final_output?.order_id,
@@ -343,6 +393,42 @@ function App() {
       finalRun.status === "completed" ? "success" : "error",
     );
   };
+
+  useEffect(() => {
+    const resumable = run?.run_id && ["queued", "running"].includes(run.status);
+    if (!resumable || isRunning) return undefined;
+
+    let cancelled = false;
+    const resumeRun = async () => {
+      setIsRunning(true);
+      try {
+        while (!cancelled) {
+          const response = await fetch(`${API_BASE}/api/runs/${run.run_id}`, { cache: "no-store" });
+          if (!response.ok) throw new Error("服务端已清理这次运行");
+          const latest = await response.json();
+          if (cancelled) return;
+          setRun(latest);
+          setEvents(latest.events || []);
+          if (Array.isArray(latest.retrieved_context)) setRagHits(latest.retrieved_context);
+          if (latest.status === "completed" || latest.status === "failed") {
+            resolvePendingAssistant(latest);
+            setIsRunning(false);
+            refreshMetrics();
+            refreshMemory();
+            return;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 700));
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setIsRunning(false);
+        showToast("运行状态已失联", error.message, "error");
+      }
+    };
+
+    resumeRun();
+    return () => { cancelled = true; };
+  }, [run?.run_id]);
 
   const searchRag = async (queryOverride) => {
     const searchQuery = (queryOverride ?? query).trim();
@@ -369,11 +455,12 @@ function App() {
   };
 
   const currentAgentOutput = run?.agent_outputs?.[selectedAgent] || null;
-  const currentAgentMeta = AGENTS.find((item) => item.id === selectedAgent) || AGENTS[0];
+  const currentAgentMeta = agents.find((item) => item.id === selectedAgent) || agents[0];
   const latestEvents = events.slice(-16).reverse();
   const stageStatus = (id) => {
     if (!run) return "idle";
-    if (run.status === "completed") return "completed";
+    const failed = events.some((event) => event.agent === id && event.status === "failed");
+    if (failed) return "failed";
     const completed = events.some((event) => event.agent === id && event.status === "completed");
     const active = events.some((event) => event.agent === id && event.status === "running") && !completed;
     return completed ? "completed" : active ? "running" : "queued";
@@ -392,6 +479,7 @@ function App() {
     events={events}
     latestEvents={latestEvents}
     metrics={metrics}
+    agents={agents}
     selectedAgent={selectedAgent}
     setSelectedAgent={setSelectedAgent}
     currentAgentOutput={currentAgentOutput}
@@ -423,6 +511,7 @@ function ChatWorkspace({
   events,
   latestEvents,
   metrics,
+  agents,
   selectedAgent,
   setSelectedAgent,
   currentAgentOutput,
@@ -448,6 +537,7 @@ function ChatWorkspace({
       events={events}
       latestEvents={latestEvents}
       metrics={metrics}
+      agents={agents}
       isRunning={isRunning}
       selectedAgent={selectedAgent}
       setSelectedAgent={setSelectedAgent}
@@ -528,7 +618,7 @@ function ChatWorkspace({
         </nav>
         <div className="directory-content">
           {activeTab === "overview" && <DirectoryOverview setActiveTab={setActiveTab} />}
-          {activeTab === "monitor" && <DirectoryMonitor run={run} events={events} latestEvents={latestEvents} ragHits={ragHits} metrics={metrics} isRunning={isRunning} selectedAgent={selectedAgent} setSelectedAgent={setSelectedAgent} currentAgentOutput={currentAgentOutput} currentAgentMeta={currentAgentMeta} stageStatus={stageStatus} />}
+          {activeTab === "monitor" && <DirectoryMonitor run={run} events={events} latestEvents={latestEvents} ragHits={ragHits} metrics={metrics} agents={agents} isRunning={isRunning} selectedAgent={selectedAgent} setSelectedAgent={setSelectedAgent} currentAgentOutput={currentAgentOutput} currentAgentMeta={currentAgentMeta} stageStatus={stageStatus} />}
           {activeTab === "rag" && <DirectoryRag query={query} setQuery={setQuery} onSearch={onSearch} loading={ragLoading} hits={ragHits} contextPins={contextPins} toggleContext={toggleContext} />}
           {activeTab === "memory" && <DirectoryMemory memory={memory} />}
         </div>
@@ -545,6 +635,7 @@ function OperationsPage({
   events,
   latestEvents,
   metrics,
+  agents,
   isRunning,
   selectedAgent,
   setSelectedAgent,
@@ -580,8 +671,8 @@ function OperationsPage({
         <div className="operations-directory-foot"><ShieldCheck size={15} /><span>Harness 监督已开启<br />每个节点都有事件记录</span></div>
       </aside>
       <section className="operations-content">
-        <div className="operations-content-head"><div><span className="operations-kicker">{activeTab === "monitor" ? "LIVE OBSERVABILITY" : activeTab === "rag" ? "RETRIEVAL AUDIT" : "PROJECT CONTEXT"}</span><h1>{labels[activeTab]}</h1><p>{activeTab === "monitor" ? "查看三个 Agent 如何协作处理客服请求。" : activeTab === "rag" ? "查看客户提问后命中的数据、相关度和来源合规性。" : "查看客服系统如何保存和复用上下文。"}</p></div><span className="operations-run-status"><span />{isRunning ? "正在运行" : run?.status === "completed" ? "最近一次已完成" : "等待任务"}</span></div>
-       {activeTab === "monitor" && <MonitorOperations projectName={projectName} run={run} events={events} latestEvents={latestEvents} metrics={metrics} isRunning={isRunning} selectedAgent={selectedAgent} setSelectedAgent={setSelectedAgent} currentAgentOutput={currentAgentOutput} currentAgentMeta={currentAgentMeta} stageStatus={stageStatus} ragHits={ragHits} />}
+        <div className="operations-content-head"><div><span className="operations-kicker">{activeTab === "monitor" ? "LIVE OBSERVABILITY" : activeTab === "rag" ? "RETRIEVAL AUDIT" : "PROJECT CONTEXT"}</span><h1>{labels[activeTab]}</h1><p>{activeTab === "monitor" ? "查看 Planning、5 个 Agent 和 Memory 如何协作处理客服请求。" : activeTab === "rag" ? "查看客户提问后命中的数据、相关度和来源合规性。" : "查看客服系统如何保存和复用上下文。"}</p></div><span className="operations-run-status"><span />{isRunning ? "正在运行" : run?.status === "completed" ? "最近一次已完成" : "等待任务"}</span></div>
+       {activeTab === "monitor" && <MonitorOperations run={run} events={events} latestEvents={latestEvents} metrics={metrics} agents={agents} isRunning={isRunning} selectedAgent={selectedAgent} setSelectedAgent={setSelectedAgent} currentAgentOutput={currentAgentOutput} currentAgentMeta={currentAgentMeta} stageStatus={stageStatus} ragHits={ragHits} />}
         {activeTab === "rag" && <RagOperations query={query} setQuery={setQuery} onSearch={onSearch} loading={ragLoading} hits={ragHits} contextPins={contextPins} toggleContext={toggleContext} />}
         {activeTab === "memory" && <MemoryOperations memory={memory} onIntentAnalysis={onIntentAnalysis} />}
       </section>
@@ -589,64 +680,94 @@ function OperationsPage({
   </div>;
 }
 
-function MonitorOperations({ projectName, run, events, latestEvents, metrics, isRunning, selectedAgent, setSelectedAgent, currentAgentOutput, currentAgentMeta, stageStatus, ragHits }) {
+function MonitorOperations({ run, events, latestEvents, metrics, agents, isRunning, selectedAgent, setSelectedAgent, currentAgentOutput, currentAgentMeta, stageStatus, ragHits }) {
   const AgentIcon = currentAgentMeta.icon;
-  const demoMonitorEvents = [
-    ...DEFAULT_MONITOR_EVENTS,
-    { id: "demo-intent", type: "intent", status: "completed", node: "intent_agent", agent: "intent", message: "识别为物流 / 配送查询，置信度 98%", timestamp: "2026-07-31T09:42:18", duration_ms: 83 },
-    { id: "demo-reflection", type: "reflection", status: "completed", node: "reflection_agent", agent: "reflection", message: "完成本轮回复反思与修正，Harness 复核通过", timestamp: "2026-07-31T09:42:21", duration_ms: 128 },
-  ];
-  const displayEvents = events.length ? events : demoMonitorEvents;
-  const displayLatestEvents = latestEvents.length ? latestEvents : demoMonitorEvents.slice().reverse();
+  const displayEvents = events;
+  const displayLatestEvents = latestEvents;
+  const liveRagHits = Array.isArray(run?.retrieved_context) ? run.retrieved_context : ragHits;
   const eventMetadata = events.reduce((result, event) => ({ ...result, ...(event.metadata || {}) }), {});
   const requestContext = {
     ...(run?.customer_context || {}),
     order_id: run?.customer_context?.order_id || eventMetadata.order_id,
     tracking_id: run?.customer_context?.tracking_id || eventMetadata.tracking_id,
   };
-  const getDisplayStatus = (agentId) => run ? stageStatus(agentId) : "completed";
-  const displayDuration = run?.metrics?.[`${selectedAgent}_agent`]?.duration_ms || ({ intent: 83, research: 142, builder: 218, qa: 121, reflection: 128 }[selectedAgent] || 142);
-  const completedEvents = displayEvents.filter((event) => event.status === "completed").length;
-  const activeRequest = run?.prompt || "客户请求";
+  const getDisplayStatus = (agentId) => run ? stageStatus(agentId) : "queued";
+  const getNodeStatus = (nodeId) => {
+    if (!run) return "queued";
+    const completed = displayEvents.some((event) => event.node === nodeId && event.status === "completed");
+    const active = displayEvents.some((event) => event.node === nodeId && event.status === "running");
+    return completed ? "completed" : active ? "running" : "queued";
+  };
+  const durationEvent = displayEvents
+    .filter((event) => event.agent === selectedAgent && event.duration_ms)
+    .reduce((latest, event) => event, null);
+  const displayDuration = run?.metrics?.[`${selectedAgent}_agent`]?.duration_ms
+    || durationEvent?.duration_ms
+    || 0;
+  const selectedEvents = displayEvents.filter((event) => event.agent === selectedAgent);
+  const selectedRunningEvent = selectedEvents.find((event) => event.status === "running");
+  const selectedCompletedEvent = selectedEvents
+    .filter((event) => event.status === "completed")
+    .reduce((latest, event) => event, null);
+  const selectedInput = selectedRunningEvent?.metadata?.input_summary
+    || selectedCompletedEvent?.metadata?.input_summary
+    || {};
+  const selectedOutput = selectedCompletedEvent?.metadata?.output_summary || {};
+  const executionId = selectedCompletedEvent?.metadata?.execution_id
+    || selectedRunningEvent?.metadata?.execution_id
+    || "等待运行";
+  const runDurations = displayEvents
+    .map((event) => event.duration_ms)
+    .filter((duration) => Number.isFinite(duration) && duration > 0);
+  const averageDuration = runDurations.length
+    ? Math.round(runDurations.reduce((sum, duration) => sum + duration, 0) / runDurations.length)
+    : 0;
+  const activeRequest = run?.prompt || "等待 Chat 发起客户问题";
   const planningStatus = run
     ? displayEvents.some((event) => event.node === "planning" && event.status === "completed")
       ? "completed"
       : displayEvents.some((event) => event.node === "planning" && event.status === "running")
         ? "running"
         : "queued"
-    : "completed";
+    : "queued";
   const flowNodes = [
     { id: "planning", label: "Planning", role: "拆解问题", description: "识别客户意图与处理目标", color: "planning", status: planningStatus, marker: "P" },
-    ...AGENTS.map((agent, index) => ({
+    ...agents.map((agent, index) => ({
       ...agent,
       label: agent.label.replace(" agent", ""),
-      role: index === 0 ? "检索知识与订单上下文" : index === 1 ? "组织回复与升级方案" : "检查风险与回复质量",
+      role: agent.flowRole || agent.role,
       status: getDisplayStatus(agent.id),
       marker: index + 1,
     })),
+    { id: "memory", label: "Memory", role: "持久化项目记忆", flowRole: "写入项目上下文", color: "memory", status: getNodeStatus("memory"), marker: "M", icon: MemoryStick },
   ].map((node) => ({ ...node, role: node.flowRole || node.role }));
   const completedFlowNodes = flowNodes.filter((node) => node.status === "completed").length;
-  const flowProgress = Math.max(12, Math.round((completedFlowNodes / flowNodes.length) * 100));
+  const flowProgress = run ? Math.round((completedFlowNodes / flowNodes.length) * 100) : 0;
+  const completedNodeCount = new Set(
+    displayEvents
+      .filter((event) => event.type === "node" && event.status === "completed" && event.node)
+      .map((event) => event.node),
+  ).size;
   return <div className="operations-stack">
     <div className="monitor-hero-grid">
       <section className="visual-panel route-visual">
          <div className="visual-panel-head"><div><span>客服处理工作流 / AGENT ROUTES</span><h2>客服请求正在经过哪些节点？</h2></div><span className="visual-live"><span />{isRunning ? "LIVE" : "READY"}</span></div>
-         <div className="route-source"><span className="route-source-dot"><MessageCircle size={13} /></span><span><strong>{activeRequest}</strong><small>订单、物流、退款或投诉问题进入处理线路</small></span><span className="route-source-state">{isRunning ? "正在分发" : "已接收"}</span></div>
+         <div className="route-source"><span className="route-source-dot"><MessageCircle size={13} /></span><span><strong>{activeRequest}</strong><small>订单、物流、退款或投诉问题进入处理线路</small></span><span className="route-source-state">{isRunning ? "正在分发" : run ? "已完成" : "等待请求"}</span></div>
          <div className="monitor-request-context">
            <span><small>Run ID</small><strong>{run?.run_id || "—"}</strong></span>
            <span><small>Conversation</small><strong>{run?.conversation_id || "—"}</strong></span>
            <span><small>订单 ID</small><strong>{requestContext.order_id || "等待 Research"}</strong></span>
            <span><small>物流 ID</small><strong>{requestContext.tracking_id || "等待 Research"}</strong></span>
          </div>
-         <div className="monitor-rag-strip">
-           <div><Database size={14} /><span><strong>本次 RAG</strong><small>{ragHits.length ? `已实时命中 ${ragHits.length} 条数据` : "等待 Research agent 返回检索结果"}</small></span></div>
-           <div className="monitor-rag-sources">{ragHits.slice(0, 3).map((hit) => <span key={hit.id} title={hit.title}>{hit.id} · {Math.round(hit.score * 100)}%</span>)}</div>
+          <div className="monitor-rag-strip">
+            <div><Database size={14} /><span><strong>本次 RAG</strong><small>{liveRagHits.length ? `已实时命中 ${liveRagHits.length} 条数据` : "等待 Research agent 返回检索结果"}</small></span></div>
+            <div className="monitor-rag-sources">{liveRagHits.slice(0, 3).map((hit) => <span key={hit.id} title={hit.title}>{hit.id} · {Math.round(hit.score * 100)}%</span>)}</div>
          </div>
          <div className="agent-flow-map">
           <div className="agent-flow-track"><i /></div>
-          {flowNodes.map((node, index) => {
-            const isAgent = Boolean(node.id && node.id !== "planning");
-            const NodeIcon = isAgent ? node.icon : GitBranch;
+           {flowNodes.map((node, index) => {
+             const isAgent = agents.some((agent) => agent.id === node.id);
+            const NodeIcon = node.icon || (node.id === "planning" ? GitBranch : MemoryStick);
             return <React.Fragment key={node.id}>
               <button className={`agent-flow-node ${node.color} ${node.status} ${selectedAgent === node.id ? "selected" : ""}`} onClick={() => isAgent && setSelectedAgent(node.id)} disabled={!isAgent}>
                 <span className="agent-flow-marker">{node.status === "completed" ? <Check size={14} /> : node.status === "running" ? <LoaderCircle size={14} className="spin" /> : node.marker}</span>
@@ -659,24 +780,24 @@ function MonitorOperations({ projectName, run, events, latestEvents, metrics, is
             </React.Fragment>;
           })}
         </div>
-        <div className="route-destination"><span><ArrowRight size={13} />客服回复</span><span>需要时转人工</span><strong>{run ? `${completedEvents}/7 events` : "最近一次 7/7"}</strong></div>
+        <div className="route-destination"><span><ArrowRight size={13} />客服回复</span><span>Harness 校验后交付</span><strong>{run ? `${completedNodeCount}/${flowNodes.length} nodes` : "等待首次运行"}</strong></div>
         <div className="route-progress route-progress-new"><span>Agent route progress</span><div><i style={{ width: `${flowProgress}%` }} /></div><strong>{completedFlowNodes}/{flowNodes.length} nodes</strong></div>
         <div className="animated-route">
           <div className={`animated-node planning ${run ? "done" : ""}`}><span>P</span><strong>Planning</strong><small>拆解问题</small></div>
           <div className="animated-connector"><i /></div>
-          {AGENTS.map((agent, index) => <React.Fragment key={agent.id}><button className={`animated-node ${agent.color} ${getDisplayStatus(agent.id)} ${selectedAgent === agent.id ? "selected" : ""}`} onClick={() => setSelectedAgent(agent.id)}><span>{getDisplayStatus(agent.id) === "completed" ? <Check size={14} /> : getDisplayStatus(agent.id) === "running" ? <LoaderCircle size={14} className="spin" /> : index + 1}</span><strong>{agent.label.replace(" agent", "")}</strong><small>{agent.role.split("与")[0]}</small></button>{index < AGENTS.length - 1 && <div className="animated-connector"><i /></div>}</React.Fragment>)}
+           {agents.map((agent, index) => <React.Fragment key={agent.id}><button className={`animated-node ${agent.color} ${getDisplayStatus(agent.id)} ${selectedAgent === agent.id ? "selected" : ""}`} onClick={() => setSelectedAgent(agent.id)}><span>{getDisplayStatus(agent.id) === "completed" ? <Check size={14} /> : getDisplayStatus(agent.id) === "running" ? <LoaderCircle size={14} className="spin" /> : index + 1}</span><strong>{agent.label.replace(" agent", "")}</strong><small>{(agent.flowRole || agent.role).split("与")[0]}</small></button>{index < agents.length - 1 && <div className="animated-connector"><i /></div>}</React.Fragment>)}
         </div>
-        <div className="route-progress"><span>Pipeline progress</span><div><i style={{ width: `${Math.max(12, Math.round((completedEvents / 7) * 100))}%` }} /></div><strong>{run ? `${completedEvents}/7 events` : "最近一次 7/7"}</strong></div>
+        <div className="route-progress"><span>Harness node progress</span><div><i style={{ width: `${run ? Math.round((completedNodeCount / flowNodes.length) * 100) : 0}%` }} /></div><strong>{run ? `${completedNodeCount}/${flowNodes.length} nodes` : `0/${flowNodes.length} nodes`}</strong></div>
       </section>
-      <section className="visual-panel pulse-visual"><div className="visual-panel-head"><div><span>EVENT PULSE</span><h2>系统活动</h2></div><BarChart3 size={18} className="visual-icon" /></div><div className="pulse-bars">{[18, 38, 26, 52, 34, 60, 42, 78, 55, 72, 63, 88].map((height, index) => <i key={index} style={{ height: `${height}%`, animationDelay: `${index * 70}ms` }} />)}</div><div className="pulse-caption"><span>{displayEvents.length} tracked events</span><strong>{metrics.avg_node_ms || 146}ms avg</strong></div></section>
+       <section className="visual-panel pulse-visual"><div className="visual-panel-head"><div><span>EVENT PULSE</span><h2>系统活动</h2></div><BarChart3 size={18} className="visual-icon" /></div><div className="pulse-bars">{displayEvents.slice(-12).map((event, index) => <i key={`${event.id}-${index}`} style={{ height: `${Math.min(92, Math.max(18, event.duration_ms || (event.status === "running" ? 44 : 28)))}%`, animationDelay: `${index * 70}ms` }} />)}{!displayEvents.length && <div className="operations-empty pulse-empty"><Activity size={18} /><span>发送一条客服问题开始记录事件</span></div>}</div><div className="pulse-caption"><span>{displayEvents.length} tracked events</span><strong>{averageDuration || metrics.avg_node_ms || 0}ms avg</strong></div></section>
     </div>
     <div className="monitor-operations-grid">
-       <section className="visual-panel inspector-visual"><div className="visual-panel-head"><div><span>HARNESS / INSPECTOR</span><h2>{currentAgentMeta.label}</h2></div><span className="compliance-badge"><ShieldCheck size={13} /> passed</span></div><div className="inspector-agent-line"><span className={`directory-agent-icon ${currentAgentMeta.color}`}><AgentIcon size={16} /></span><span><strong>{currentAgentMeta.role}</strong><small>{currentAgentOutput?.headline || "最近一次运行已完成"}</small></span></div><div className="inspector-skills">{(currentAgentMeta.skills || []).map((skill) => <span key={skill}>{skill}</span>)}</div><div className="inspector-copy"><span>{currentAgentOutput?.summary || "最近一次客服处理已完成，Harness 已通过输出字段和风险边界检查。"}</span><small className="inspector-provider">生成方式：{currentAgentOutput?.provider === "deepseek" ? `DeepSeek / ${currentAgentOutput.model || "configured model"}` : currentAgentOutput?.provider_error ? `local-fallback · ${currentAgentOutput.provider_error}` : "local-fallback"}</small></div><div className="inspector-stats"><span><Clock3 size={14} /> {displayDuration}ms</span><span><Database size={14} /> {ragHits.length} RAG hits</span><span><ShieldCheck size={14} /> supervised</span></div></section>
-      <section className="visual-panel live-events-visual"><div className="visual-panel-head"><div><span>03 / OBSERVE</span><h2>实时 Harness 事件</h2></div><span className="event-count"><Activity size={13} /> {displayEvents.length}</span></div><div className="live-event-list">{displayLatestEvents.slice(0, 7).map((event) => <div className="live-event-item" key={`${event.id}-${event.timestamp}`}><span className={`event-dot ${event.status}`} /><span><strong>{event.agent || event.node || "system"}</strong><small>{event.message}</small>{eventContext(event) && <em>{eventContext(event)}</em>}</span><time>{event.duration_ms ? `${event.duration_ms}ms` : "now"}</time></div>)}</div></section>
+        <section className="visual-panel inspector-visual"><div className="visual-panel-head"><div><span>HARNESS / INSPECTOR</span><h2>{currentAgentMeta.label}</h2></div><span className="compliance-badge"><ShieldCheck size={13} /> {run ? "supervised" : "ready"}</span></div><div className="inspector-agent-line"><span className={`directory-agent-icon ${currentAgentMeta.color}`}><AgentIcon size={16} /></span><span><strong>{currentAgentMeta.role}</strong><small>{currentAgentOutput?.headline || "发送问题后显示本节点的真实输出"}</small></span></div><div className="inspector-skills">{(currentAgentMeta.skills || []).map((skill) => <span key={skill}>{skill}</span>)}</div><div className="inspector-execution"><div><span>Execution ID</span><strong>{executionId}</strong></div><div><span>Input</span><strong>{selectedInput.prompt || "等待 Agent 接收问题"}</strong></div><div><span>Output</span><strong>{selectedOutput.summary || currentAgentOutput?.summary || "等待 Agent 返回结果"}</strong></div></div><div className="inspector-copy"><span>{currentAgentOutput?.summary || "Harness 会在节点运行后记录输入、输出、耗时和校验结果。"}</span><small className="inspector-provider">生成方式：{currentAgentOutput?.provider === "deepseek" ? `DeepSeek / ${currentAgentOutput.model || "configured model"}` : currentAgentOutput?.provider_error ? `grounded fallback · ${currentAgentOutput.provider_error}` : currentAgentOutput ? "LangGraph node" : "等待运行"}</small></div><div className="inspector-stats"><span><Clock3 size={14} /> {displayDuration}ms</span><span><Database size={14} /> {liveRagHits.length} RAG hits</span><span><ShieldCheck size={14} /> {run ? "supervised" : "ready"}</span></div></section>
+       <section className="visual-panel live-events-visual"><div className="visual-panel-head"><div><span>03 / OBSERVE</span><h2>实时 Harness 事件</h2></div><span className="event-count"><Activity size={13} /> {displayEvents.length}</span></div><div className="live-event-list">{displayLatestEvents.length ? displayLatestEvents.slice(0, 7).map((event) => <div className="live-event-item" key={`${event.id}-${event.timestamp}`}><span className={`event-dot ${event.status}`} /><span><strong>{event.agent || event.node || "system"}</strong><small>{event.message}</small>{eventContext(event) && <em>{eventContext(event)}</em>}</span><time>{event.duration_ms ? `${event.duration_ms}ms` : "now"}</time></div>) : <div className="operations-empty"><Activity size={18} /><span>发送一条客服问题后，Harness 事件会实时出现在这里。</span></div>}</div></section>
     </div>
     <section className="monitor-output-preview">
       <div className="monitor-output-head"><div><span>OUTPUT / PREVIEW</span><h2>本次客服处理产物</h2></div><span className="visual-live"><span />{isRunning ? "LIVE" : "READY"}</span></div>
-      <ProductPreview run={run} isRunning={isRunning} />
+       <ProductPreview run={run} isRunning={isRunning} agents={agents} />
     </section>
   </div>;
 }
@@ -736,6 +857,7 @@ function eventContext(event) {
     metadata.tracking_id && `物流 ${metadata.tracking_id}`,
     metadata.conversation_id && `会话 ${metadata.conversation_id}`,
     metadata.turn && `第 ${metadata.turn} 轮`,
+    metadata.execution_id && `执行 ${metadata.execution_id}`,
   ].filter(Boolean);
   return identifiers.join(" · ");
 }
@@ -748,7 +870,7 @@ function DirectoryOverview({ setActiveTab }) {
   </div>;
 }
 
-function DirectoryMonitor({ run, events, latestEvents, ragHits, metrics, isRunning, selectedAgent, setSelectedAgent, currentAgentOutput, currentAgentMeta, stageStatus }) {
+function DirectoryMonitor({ run, events, latestEvents, ragHits, metrics, agents, isRunning, selectedAgent, setSelectedAgent, currentAgentOutput, currentAgentMeta, stageStatus }) {
   const AgentIcon = currentAgentMeta.icon;
   const eventMetadata = events.reduce((result, event) => ({ ...result, ...(event.metadata || {}) }), {});
   const customerContext = {
@@ -770,7 +892,7 @@ function DirectoryMonitor({ run, events, latestEvents, ragHits, metrics, isRunni
     </div>
     <div className="directory-section-title"><span>Agent routes</span><span className="live-mini"><span />{isRunning ? "实时" : "待命"}</span></div>
     <div className="directory-agent-list">
-      {AGENTS.map((agent) => { const Icon = agent.icon; return <button className={`directory-agent-row ${selectedAgent === agent.id ? "selected" : ""}`} key={agent.id} onClick={() => setSelectedAgent(agent.id)}><span className={`directory-agent-icon ${agent.color}`}><Icon size={14} /></span><span><strong>{agent.label}</strong><small>{agent.role}</small><em>{(agent.skills || []).join(" · ")}</em></span><MonitorStatus status={stageStatus(agent.id)} /></button>; })}
+      {agents.map((agent) => { const Icon = agent.icon; return <button className={`directory-agent-row ${selectedAgent === agent.id ? "selected" : ""}`} key={agent.id} onClick={() => setSelectedAgent(agent.id)}><span className={`directory-agent-icon ${agent.color}`}><Icon size={14} /></span><span><strong>{agent.label}</strong><small>{agent.role}</small><em>{(agent.skills || []).join(" · ")}</em></span><MonitorStatus status={stageStatus(agent.id)} /></button>; })}
     </div>
     <div className="directory-kpi-row"><div><span>平均耗时</span><strong>{metrics.avg_node_ms || 0}ms</strong></div><div><span>Guardrail</span><strong className="green-text">{metrics.guardrail_pass_rate}%</strong></div></div>
     <div className="directory-inspector"><div className="directory-section-title"><span>Inspector</span><ShieldCheck size={14} className="green-icon" /></div><div className="directory-inspector-agent"><span className={`directory-agent-icon ${currentAgentMeta.color}`}><AgentIcon size={14} /></span><span><strong>{currentAgentMeta.label}</strong><small>{currentAgentMeta.role}</small><em>{(currentAgentMeta.skills || []).join(" · ")}</em></span></div><p>{currentAgentOutput?.summary || "运行后显示该 Agent 的输出摘要和处理上下文。"}</p></div>
@@ -795,40 +917,22 @@ function DirectoryMemory({ memory }) {
   return <div className="directory-stack"><div className="directory-section-title"><span>项目记忆</span><span className="status-ok"><span />本地保存</span></div><div className="directory-memory-file"><MemoryStick size={15} /><span><strong>MEMORY.md</strong><small>可读项目摘要</small></span></div><div className="directory-memory-file"><TerminalSquare size={15} /><span><strong>runs.jsonl</strong><small>追加式运行记录</small></span></div><div className="directory-memory-list">{memory.runs?.length ? memory.runs.slice(0, 5).map((item) => <div key={`${item.run_id}-${item.timestamp}`}><span className="memory-list-dot" /><span><strong>{item.project_name}</strong><small>{item.status} · {item.retrieved_context?.length || 0} 条上下文</small></span></div>) : <div className="directory-empty">暂无项目记忆</div>}</div></div>;
 }
 
-function getCustomerReply(content) {
-  const seed = Math.abs([...content].reduce((sum, char) => sum + char.charCodeAt(0), 0));
-  const orderId = `FF${20260731}${seed % 9000 + 1000}`;
-  const trackingId = `SF${20260731}${String(seed % 90000000).padStart(8, "0")}`;
-  if (/订单|物流|快递|配送/.test(content)) {
-    return `我查到这笔演示订单号是 ${orderId}，物流单号是 ${trackingId}。现在包裹在杭州分拨中心运输中，预计 1-2 天会更新下一条轨迹。`;
-  }
-  if (/退款|退货|取消/.test(content)) {
-    return `我查到这笔演示订单号是 ${orderId}，关联物流单号是 ${trackingId}。目前可以申请退款，请告诉我商品有没有使用或破损，我再帮您确认适用的售后方式。`;
-  }
-  if (/投诉|生气|不满|人工/.test(content)) {
-    return `很抱歉让您遇到这个问题。我已经记录演示订单 ${orderId} 的情况，物流单号是 ${trackingId}。您可以告诉我是破损、少件还是签收异常，我会按对应规则继续处理。`;
-  }
-  return `我先帮您建立这笔演示订单查询：订单号是 ${orderId}，物流单号是 ${trackingId}。您可以直接告诉我想查订单、物流还是退款。`;
-}
-
 function MonitorStatus({ status }) {
   const labels = { idle: "idle", queued: "queued", running: "running", completed: "done", failed: "failed" };
   return <span className={`monitor-status ${status}`}><span />{labels[status] || status}</span>;
 }
 
-function ProductPreview({ run, isRunning }) {
+function ProductPreview({ run, isRunning, agents }) {
   const [activeView, setActiveView] = useState("reply");
   const [copied, setCopied] = useState(false);
   const output = run?.final_output;
   const reply = output?.customer_reply || "";
-  const routeNodes = [
-    ["planning", "Planning"],
-    ["intent_agent", "Intent"],
-    ["research_agent", "Research"],
-    ["builder_agent", "Builder"],
-    ["qa_agent", "QA"],
-    ["reflection_agent", "Reflection"],
-  ];
+  const routeNodes = run?.plan?.route?.map((item) => [item.node || item.id, item.label])
+    || [
+      ["planning", "Planning"],
+      ...agents.map((agent) => [`${agent.id}_agent`, agent.label.replace(" agent", "")]),
+      ["memory", "Memory"],
+    ];
   const getNodeStatus = (node) => {
     if (!run) return "待运行";
     if (run.events?.some((event) => event.node === node && event.status === "completed")) return "已完成";
@@ -848,9 +952,9 @@ function ProductPreview({ run, isRunning }) {
   };
   const signals = output?.checks || [
     { label: "等待客户问题", detail: "发送一条客服问题开始运行" },
-    { label: "RAG context ready", detail: "本地知识库可用" },
-    { label: "Memory layer ready", detail: "运行结果会保存到项目记忆" },
   ];
+  const passedChecks = output?.checks?.filter((item) => item.status === "passed").length || 0;
+  const checkCount = output?.checks?.length || 0;
   return <div className="product-preview product-preview-live">
     <div className="preview-topbar">
       <div className="preview-brand"><span>F</span><strong>客服结果</strong></div>
@@ -860,20 +964,20 @@ function ProductPreview({ run, isRunning }) {
       <span className="preview-user">{output?.llm_provider === "deepseek" ? "DS" : "FF"}</span>
     </div>
     <div className="preview-body">
-      <div className="preview-greeting">
-        <div><small>{run?.run_id ? `Run ${run.run_id}` : "OUTPUT / PREVIEW"}</small><h3>{isRunning ? "正在生成客服结果..." : output ? "本轮客服回复已生成" : "等待客户问题"}</h3><p>{isRunning ? "Intent、Research、Builder、QA 和 Reflection 正在运行。" : output?.tagline || "发送订单、物流或退款问题，查看真实运行结果。"}</p></div>
+       <div className="preview-greeting">
+         <div><small>{run?.run_id ? `Run ${run.run_id}` : "OUTPUT / PREVIEW"}</small><h3>{isRunning ? "正在生成客服结果..." : output ? "本轮客服回复已生成" : "等待客户问题"}</h3><p>{isRunning ? "LangGraph 正在按计划执行 Agent 节点。" : output?.tagline || "发送订单、物流或退款问题，查看真实运行结果。"}</p></div>
         <button className="preview-copy-button" onClick={copyReply} disabled={!reply}><Copy size={13} />{copied ? "已复制" : "复制回复"}</button>
       </div>
       <div className="preview-stats">
         <PreviewStat label="生成方式" value={output?.llm_provider === "deepseek" ? "DeepSeek" : "Fallback"} trend={output?.llm_model || "未配置 API Key"} color="teal" />
         <PreviewStat label="Context recall" value={run?.retrieved_context?.length || 0} trend="RAG hits" color="violet" />
-        <PreviewStat label="Guardrails" value={run?.status === "completed" ? "4/4" : "ready"} trend="Harness supervised" color="yellow" />
+         <PreviewStat label="Guardrails" value={checkCount ? `${passedChecks}/${checkCount}` : "—"} trend={checkCount ? "Harness supervised" : "等待运行"} color="yellow" />
       </div>
       {activeView === "reply" && <div className="preview-live-result"><div className="preview-card-head"><span>客服回复</span><span className="preview-provider">{output?.llm_provider === "deepseek" ? "DeepSeek generated" : "Local fallback"}</span></div><p>{reply || "还没有生成回复。请从 Chat 输入一条客户问题。"}</p><div className="preview-id-row"><span>订单 {output?.order_id || "等待生成"}</span><span>物流 {output?.tracking_id || "等待生成"}</span></div></div>}
       {activeView === "route" && <div className="preview-route-list">{routeNodes.map(([node, label], index) => <div className="preview-route-row" key={node}><span>{index + 1}</span><strong>{label}</strong><small>{getNodeStatus(node)}</small></div>)}</div>}
       {activeView === "context" && <div className="preview-context-grid"><div><span>Conversation</span><strong>{run?.conversation_id || "等待生成"}</strong></div><div><span>意图</span><strong>{output?.intent_label || "等待识别"}</strong></div><div><span>RAG 来源</span><strong>{run?.retrieved_context?.map((item) => item.id).join("、") || "等待检索"}</strong></div><div><span>数据类型</span><strong>{output?.data_kind || "合成演示数据"}</strong></div></div>}
-      <div className="preview-columns">
-        <div className="preview-card preview-chart"><div className="preview-card-head"><span>Execution pulse</span><MoreDots /></div><div className="chart-labels"><span>planning</span><span>research</span><span>builder</span><span>qa</span></div><div className="pulse-chart">{(pulseValues.length ? pulseValues : [30, 44, 36, 52, 42, 60, 48, 68]).map((height, index) => <i key={index} style={{ height: `${height}%` }} />)}</div><div className="chart-foot"><span>当前事件</span><strong>{run?.events?.length || 0} tracked</strong></div></div>
+       <div className="preview-columns">
+         <div className="preview-card preview-chart"><div className="preview-card-head"><span>Execution pulse</span><MoreDots /></div><div className="chart-labels"><span>planning</span><span>research</span><span>builder</span><span>qa</span></div><div className="pulse-chart">{pulseValues.length ? pulseValues.map((height, index) => <i key={index} style={{ height: `${height}%` }} />) : <div className="operations-empty"><Activity size={16} /><span>运行后显示真实节点耗时</span></div>}</div><div className="chart-foot"><span>当前事件</span><strong>{run?.events?.length || 0} tracked</strong></div></div>
         <div className="preview-card preview-insights"><div className="preview-card-head"><span>Live signals</span><span className="signal-count">{signals.length}</span></div>{signals.slice(0, 3).map((item, index) => <div className="signal-row" key={item.label}><span className={`signal-mark signal-${index}`}><Check size={12} /></span><span><strong>{item.label}</strong><small>{item.detail || "guardrail check passed"}</small></span><ArrowRight size={13} /></div>)}</div>
       </div>
     </div>

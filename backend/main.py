@@ -10,11 +10,11 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .deepseek import deepseek_client
-from .graph import AGENT_META, execute_run
+from .graph import AGENT_META, WORKFLOW_ROUTE, execute_run
 from .models import RagQuery, RunRequest, RunResponse
 from .rag import rag
 from .storage import memory_store, run_store, utc_now
@@ -135,11 +135,14 @@ async def metrics() -> dict[str, Any]:
                 "id": meta["id"],
                 "label": meta["label"],
                 "role": meta["role"],
+                "description": meta["description"],
+                "flow_role": meta["flow_role"],
                 "skills": meta["skills"],
                 "color": meta["color"],
             }
             for meta in AGENT_META.values()
         ],
+        "workflow": WORKFLOW_ROUTE,
     }
 
 
@@ -150,7 +153,8 @@ async def search_rag(request: RagQuery) -> dict[str, Any]:
 
 
 @app.get("/api/memory")
-async def memory(limit: int = Query(default=8, ge=1, le=20)) -> dict[str, Any]:
+async def memory(response: Response, limit: int = Query(default=8, ge=1, le=20)) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
     return {
         "format": "Claude Code inspired MEMORY.md + runs.jsonl",
         "file": "memory/MEMORY.md",

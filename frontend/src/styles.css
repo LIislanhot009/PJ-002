@@ -746,3 +746,10 @@ html, body, #root { height: 100%; overflow: hidden; }
 .monitor-output-head span:first-child { color: #8a98a4; font-size: 9px; font-weight: 800; letter-spacing: .12em; }
 .monitor-output-head h2 { margin: 0; color: #293c49; font-size: 20px; }
 .monitor-output-preview .product-preview { width: 100%; min-height: 0; margin: 0; box-shadow: none; }
+.agent-flow-node.memory .agent-flow-icon { color: #5167a8; background: #edf1ff; }
+.agent-flow-node.memory.completed .agent-flow-marker { color: #5167a8; background: #edf1ff; }
+.inspector-execution { display: grid; gap: 7px; margin: 10px 20px 0; padding: 10px; border: 1px solid #e2ecea; border-radius: 7px; background: #f8fcfb; }
+.inspector-execution > div { display: grid; grid-template-columns: 72px 1fr; gap: 8px; min-width: 0; }
+.inspector-execution span { color: #8a98a4; font-size: 8px; }
+.inspector-execution strong { overflow: hidden; color: #536673; font-size: 9px; font-weight: 600; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.pulse-empty { width: 100%; min-height: 90px; padding: 0; }

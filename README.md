@@ -67,7 +67,7 @@ $env:DEEPSEEK_MODEL="deepseek-v4-flash"
 
 ## 交互重点
 
-1. 在工作台输入需求，点击 `Run 3 agents`。
+1. 在工作台输入客户问题，点击发送，系统会自动运行完整 workflow。
 2. 观察 LangGraph 节点和 Harness 事件流。
 3. 点击不同 Agent 查看输入输出摘要、耗时与 guardrail 状态。
 4. 在 `RAG 检索` 页面搜索自造知识库，并把结果 pin 到当前上下文。

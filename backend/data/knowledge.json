@@ -75,7 +75,11 @@
     "tags": "客服 订单 待发货 发货 订单号 演示数据",
     "content": "当客户询问订单为什么还没有发货时，先核对演示订单 ID，再说明当前状态、预计发货时间和下一步。订单号使用本地生成的 FF 开头模拟 ID，不代表真实订单。",
     "source": "ForgeFlow Customer Service Demo",
-    "data_kind": "模拟数据"
+    "data_kind": "模拟数据",
+    "facts": {
+      "order_status": "待发货",
+      "next_step": "商家发货后会生成首条物流轨迹"
+    }
   },
   {
     "id": "cs-demo-002",
@@ -83,7 +87,13 @@
     "tags": "客服 物流 快递 配送 运输中 分拨中心 物流号 演示数据",
     "content": "演示物流单号使用 SF 开头的本地生成 ID。可展示待揽收、运输中、到达分拨中心和派送中等状态；若客户继续追问，应沿用同一个 conversation_id 下的物流号。",
     "source": "ForgeFlow Customer Service Demo",
-    "data_kind": "模拟数据"
+    "data_kind": "模拟数据",
+    "facts": {
+      "tracking_status": "运输中",
+      "location": "杭州分拨中心",
+      "eta": "1-2 天内更新下一条轨迹",
+      "next_step": "继续追问时会沿用同一个物流号"
+    }
   },
   {
     "id": "cs-demo-003",
@@ -91,7 +101,12 @@
     "tags": "客服 物流 签收 未收到 丢件 配送异常 投诉",
     "content": "对于物流显示签收但客户没有收到的情况，先确认签收时间和地址，再建议核对门卫、前台和家人代收信息。没有核实前不要直接断言包裹丢失。",
     "source": "ForgeFlow Customer Service Demo",
-    "data_kind": "模拟数据"
+    "data_kind": "模拟数据",
+    "facts": {
+      "tracking_status": "系统显示已签收",
+      "location": "杭州分拨中心",
+      "next_step": "先核对前台、门卫或家人代收信息，再登记签收异常"
+    }
   },
   {
     "id": "cs-demo-004",
@@ -99,7 +114,11 @@
     "tags": "客服 退款 退货 取消订单 售后 商品状态",
     "content": "退款问题需要确认订单状态、商品是否发货、是否使用以及是否存在破损。演示回复可以说明申请路径和所需信息，不执行真实退款操作。",
     "source": "ForgeFlow Customer Service Demo",
-    "data_kind": "模拟数据"
+    "data_kind": "模拟数据",
+    "facts": {
+      "after_sales": "可以进入退款或退货申请流程",
+      "next_step": "先补充商品是否使用、是否发货以及是否破损"
+    }
   },
   {
     "id": "cs-demo-005",
@@ -107,7 +126,11 @@
     "tags": "客服 投诉 破损 少件 商品异常 售后 证据",
     "content": "商品破损或少件时，客服应先表达歉意，再收集订单 ID、异常类型和照片等必要信息。只在信息完整后给出补发、退款或进一步核验建议。",
     "source": "ForgeFlow Customer Service Demo",
-    "data_kind": "模拟数据"
+    "data_kind": "模拟数据",
+    "facts": {
+      "after_sales": "需要先登记商品异常",
+      "next_step": "补充破损或少件类型，并提供照片等必要信息"
+    }
   },
   {
     "id": "cs-demo-006",

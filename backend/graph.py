@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from langgraph.graph import END, StateGraph
 
 from .deepseek import DeepSeekError, deepseek_client
-from .harness import AGENT_META, Harness, emit
+from .harness import AGENT_META, WORKFLOW_ROUTE, Harness, emit
 from .models import AgentState
 from .rag import rag
 from .storage import memory_store, run_store
@@ -17,8 +18,9 @@ from .storage import memory_store, run_store
 def make_customer_context(conversation_id: str) -> dict[str, str]:
     """Creates stable fake identifiers for one demo conversation."""
     numeric = sum((index + 1) * ord(char) for index, char in enumerate(conversation_id))
-    order_id = f"FF{20260731}{numeric % 9000 + 1000}"
-    tracking_id = f"SF{20260731}{numeric % 90000000:08d}"
+    date_key = datetime.now(timezone.utc).strftime("%Y%m%d")
+    order_id = f"FF{date_key}{numeric % 9000 + 1000}"
+    tracking_id = f"SF{date_key}{numeric % 90000000:08d}"
     return {
         "data_kind": "模拟数据",
         "order_id": order_id,
@@ -113,31 +115,121 @@ def classify_intent(
         return (*fallback, "local-fallback")
 
 
+def _merge_demo_facts(context: list[dict[str, Any]]) -> dict[str, Any]:
+    facts: dict[str, Any] = {}
+    for item in context:
+        for key, value in (item.get("facts") or {}).items():
+            facts.setdefault(key, value)
+    return facts
+
+
+def _first_sentence(content: str) -> str:
+    sentence = re.split(r"[。！？!?；;]", content.strip(), maxsplit=1)[0].strip()
+    return f"{sentence}。" if sentence else ""
+
+
+def _research_summary(context: list[dict[str, Any]], facts: dict[str, Any]) -> str:
+    detail_parts = [
+        f"物流状态为“{facts['tracking_status']}”" if facts.get("tracking_status") else None,
+        f"最近节点是“{facts['location']}”" if facts.get("location") else None,
+        f"预计{facts['eta']}" if facts.get("eta") else None,
+        f"订单状态为“{facts['order_status']}”" if facts.get("order_status") else None,
+        facts.get("after_sales"),
+    ]
+    detail = "，".join(part for part in detail_parts if part)
+    if detail:
+        return f"已从 {len(context)} 条合规知识中整理出本轮处理事实：{detail}。"
+    if context:
+        return f"已从 {len(context)} 条合规知识中提取处理依据：{_first_sentence(context[0].get('content', ''))}"
+    return "本轮没有命中知识片段，将由客服 Agent 基于会话上下文继续澄清问题。"
+
+
+def _grounded_fallback_reply(
+    state: AgentState,
+    customer_context: dict[str, str],
+    intent: str,
+) -> str:
+    """Create an offline answer from retrieved facts instead of an intent template."""
+    context = state.get("retrieved_context", [])
+    facts = _merge_demo_facts(context)
+    label = state.get("agent_outputs", {}).get("intent", {}).get("intent_label", intent)
+    order_id = customer_context["order_id"]
+    tracking_id = customer_context["tracking_id"]
+    parts = [
+        f"我先按“{label}”帮您核对这笔合成演示订单，订单号是 {order_id}，物流单号是 {tracking_id}。",
+    ]
+    detail_parts = [
+        f"目前物流状态是“{facts['tracking_status']}”" if facts.get("tracking_status") else None,
+        f"最近节点在“{facts['location']}”" if facts.get("location") else None,
+        f"预计{facts['eta']}" if facts.get("eta") else None,
+        f"订单状态为“{facts['order_status']}”" if facts.get("order_status") else None,
+        facts.get("after_sales"),
+    ]
+    detail = "，".join(part for part in detail_parts if part)
+    if detail:
+        parts.append(f"我查到的处理事实是：{detail}。")
+    elif context:
+        parts.append(_first_sentence(context[0].get("content", "")))
+    next_step = facts.get("next_step")
+    if next_step:
+        parts.append(f"接下来{next_step}。")
+    else:
+        parts.append("您可以继续补充想查询的节点或售后信息，我会沿用这组上下文继续处理。")
+    return "".join(parts)
+
+
+def _suggested_questions(state: AgentState) -> list[str]:
+    facts = _merge_demo_facts(state.get("retrieved_context", []))
+    suggestions = []
+    if facts.get("location") or facts.get("tracking_status"):
+        suggestions.append("现在物流到哪里了？")
+    if facts.get("order_status"):
+        suggestions.append("什么时候可以发货？")
+    if facts.get("after_sales"):
+        suggestions.append("我需要准备哪些售后信息？")
+    return suggestions or ["我还可以继续查询哪些信息？"]
+
+
 def planning_node(state: AgentState) -> dict[str, Any]:
     prompt = latest_user_message(state)
+    agent_steps = [
+        {
+            "id": item["id"],
+            "label": item["role"],
+            "owner": AGENT_META[item["node"]]["label"],
+        }
+        for item in WORKFLOW_ROUTE
+        if item["type"] == "agent"
+    ]
+    route_steps = [
+        {
+            "id": item["id"],
+            "node": item["node"],
+            "label": item["label"],
+            "owner": item.get("role"),
+        }
+        for item in WORKFLOW_ROUTE
+    ]
     plan = {
         "summary": f"围绕“{prompt[:52]}”建立一轮可追踪的客服处理闭环",
-        "objective": "把客户问题交给意图识别、检索、回复、质检和反思节点",
-        "steps": [
-            {"id": "intent", "label": "识别客户意图", "owner": "Intent agent"},
-            {"id": "research", "label": "检索知识和订单上下文", "owner": "Research agent"},
-            {"id": "builder", "label": "生成客服回复", "owner": "Builder agent"},
-            {"id": "qa", "label": "检查回复风险和完整性", "owner": "QA agent"},
-            {"id": "reflection", "label": "反思并修正本轮答案", "owner": "Reflection agent"},
-        ],
+        "objective": "让 Agent 按依赖顺序完成识别、检索、生成、质检、反思，并持久化本轮上下文",
+        "steps": agent_steps,
+        "route": route_steps,
         "acceptance": [
             "每一轮对话都有稳定的 conversation_id 和 turn",
             "模拟订单号与物流号在同一会话内保持一致",
             "每个 Agent 的输入、输出、耗时和 guardrail 可追踪",
+            "最终回复只能使用本轮检索事实和合成演示数据",
         ],
     }
     emit(
         state,
         "run",
         "info",
-        "Planner 已建立客服处理计划，准备依次调度 5 个 Agent",
+        f"Planner 已建立客服处理计划，准备依次调度 {len(agent_steps)} 个 Agent 和 Memory",
         node="planning",
         steps=len(plan["steps"]),
+        route=[item["id"] for item in route_steps],
         turn=state.get("turn", 1),
     )
     return {"plan": plan, "status": "running"}
@@ -200,21 +292,15 @@ def research_logic(state: AgentState) -> dict[str, Any]:
     customer_context = state.get("customer_context") or make_customer_context(
         state.get("conversation_id") or state["run_id"],
     )
-    intent = state.get("intent", "general")
-    status_by_intent = {
-        "logistics": "演示物流显示为“运输中”，最近节点是“杭州分拨中心”，预计 1-2 天更新",
-        "order_status": "演示订单已经创建，当前状态为“待发货”，客服可以继续查询物流节点",
-        "refund": "演示订单处于可申请售后的时间范围内，需要先确认商品状态",
-        "complaint": "已找到商品异常和售后处理规则，建议先记录问题并核对订单",
-        "general": "已找到订单查询、物流和售后规则，可继续根据客户追问补充信息",
-    }
+    facts = _merge_demo_facts(context)
     output = {
         "headline": "完成知识库与会话上下文检索",
-        "summary": status_by_intent.get(intent, status_by_intent["general"]),
-        "intent": intent,
+        "summary": _research_summary(context, facts),
+        "intent": state.get("intent", "general"),
         "rag_hits": len(context),
         "source_ids": [item["id"] for item in context],
         "customer_context": customer_context,
+        "facts": facts,
     }
     emit(
         state,
@@ -227,6 +313,7 @@ def research_logic(state: AgentState) -> dict[str, Any]:
         source="data/knowledge.json",
         order_id=customer_context["order_id"],
         tracking_id=customer_context["tracking_id"],
+        facts=facts,
     )
     return {
         "retrieved_context": context,
@@ -298,42 +385,11 @@ def builder_logic(state: AgentState) -> dict[str, Any]:
     customer_context = state.get("customer_context") or make_customer_context(
         state.get("conversation_id") or state["run_id"],
     )
-    prompt = latest_user_message(state)
     intent = state.get("intent", "general")
     turn = state.get("turn", 1)
     order_id = customer_context["order_id"]
     tracking_id = customer_context["tracking_id"]
-    if intent == "logistics":
-        reply = (
-            f"我查到这笔演示订单号是 {order_id}，物流单号是 {tracking_id}。"
-            "现在包裹在杭州分拨中心，状态是运输中，预计 1-2 天会更新下一条轨迹。"
-        )
-    elif intent == "order_status":
-        reply = (
-            f"我查到您的演示订单号是 {order_id}，当前状态为“待发货”。"
-            f"对应物流单号 {tracking_id} 已预生成，商家发出后才会开始更新轨迹。"
-        )
-    elif intent == "refund":
-        reply = (
-            f"这笔演示订单 {order_id} 当前可以进入退款 / 退货申请流程，物流关联单号是 {tracking_id}。"
-            "申请前需要确认商品是否已使用或破损，我会根据这个信息帮您选择售后原因。"
-        )
-    elif intent == "complaint":
-        if re.search(r"签收.*(没|未|没有).*收到|没有收到.*签收|签收.*异常", prompt):
-            reply = (
-                f"我查到订单号是 {order_id}，物流单号是 {tracking_id}。"
-                "系统记录显示包裹已在杭州分拨中心签收，但您这边没有收到。建议先核对前台、门卫或家人代收信息；如果仍找不到，我再按签收异常继续登记。"
-            )
-        else:
-            reply = (
-                f"很抱歉让您遇到这个问题。我已记录演示订单 {order_id} 的商品异常，物流单号是 {tracking_id}。"
-                "请告诉我是破损、少件还是其他异常，我会按对应规则继续处理。"
-            )
-    else:
-        reply = (
-            f"我先为您建立本轮演示查询，订单号是 {order_id}，物流单号是 {tracking_id}。"
-            "您可以直接告诉我想查订单、物流还是退款，我会沿用这组信息继续处理。"
-        )
+    reply = _grounded_fallback_reply(state, customer_context, intent)
     generated_reply = generate_customer_reply(state, customer_context, intent)
     provider = "local-fallback"
     if generated_reply:
@@ -349,7 +405,7 @@ def builder_logic(state: AgentState) -> dict[str, Any]:
         "model": deepseek_client.model if provider == "deepseek" else None,
         "provider_error": provider_error,
         "turn": turn,
-        "suggested_questions": ["现在到哪里了？", "为什么物流没有更新？", "我想申请退款怎么办？"],
+        "suggested_questions": _suggested_questions(state),
     }
     emit(
         state,
@@ -415,16 +471,39 @@ def reflection_logic(state: AgentState) -> dict[str, Any]:
             f"{reply} 本轮演示订单号为 {context.get('order_id')}，物流单号为 {context.get('tracking_id')}。"
         )
     reflection_checks = [
-        {"label": "回复与意图一致", "status": "passed", "detail": "保留了意图识别结果和客服处理方向"},
-        {"label": "回复包含可复核 ID", "status": "passed", "detail": "保留订单号和物流单号，便于继续追问"},
-        {"label": "回复适合多轮对话", "status": "passed", "detail": "提供了下一步可继续提问的方向"},
-        {"label": "Harness 复核", "status": "passed", "detail": f"QA 已通过 {len(checks)} 项检查"},
+        {
+            "label": "回复与意图一致",
+            "status": "passed" if state.get("intent") and reply else "failed",
+            "detail": "保留了意图识别结果和客服处理方向",
+        },
+        {
+            "label": "回复包含可复核 ID",
+            "status": "passed"
+            if context.get("order_id") in reply and context.get("tracking_id") in reply
+            else "failed",
+            "detail": "保留订单号和物流单号，便于继续追问",
+        },
+        {
+            "label": "回复适合多轮对话",
+            "status": "passed" if state.get("turn", 1) >= 1 and reply else "failed",
+            "detail": "回复提供了可以继续追问的方向",
+        },
+        {
+            "label": "Harness 复核",
+            "status": "passed" if checks and all(item["status"] == "passed" for item in checks) else "review",
+            "detail": f"QA 已返回 {len(checks)} 项检查结果",
+        },
     ]
+    score = round(
+        sum(item["status"] == "passed" for item in reflection_checks)
+        / len(reflection_checks)
+        * 100
+    )
     output = {
         "headline": "完成本轮回复反思与修正",
         "summary": "Reflection agent 复核了意图、演示 ID、上下文和安全边界，确认回复可以返回客服对话框。",
         "checks": reflection_checks,
-        "score": 98,
+        "score": score,
         "revised": reply != builder.get("customer_reply", ""),
         "turn": state.get("turn", 1),
     }

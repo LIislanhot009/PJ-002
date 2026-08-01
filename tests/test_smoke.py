@@ -151,6 +151,8 @@ class ForgeFlowSmokeTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(memory_write_statuses, ["running"])
         self.assertEqual(run_store.get(run_id)["status"], "completed")
+        self.assertIn("memory", {event["node"] for event in result["events"]})
+        self.assertTrue(any(event["type"] == "memory" and event["status"] == "completed" for event in result["events"]))
 
     def test_customer_context_is_stable(self) -> None:
         self.assertEqual(

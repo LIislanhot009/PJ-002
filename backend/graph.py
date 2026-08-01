@@ -462,6 +462,22 @@ def reflection_logic(state: AgentState) -> dict[str, Any]:
     }
 
 
+def memory_logic(state: AgentState) -> dict[str, Any]:
+    """Persist the completed graph state before the run is marked complete."""
+    memory_store.append_run({**state, "status": "completed"})
+    emit(
+        state,
+        "memory",
+        "completed",
+        "Harness 已将本轮客服记忆写入 Claude Code 风格项目记忆",
+        node="memory",
+        conversation_id=state.get("conversation_id"),
+        turn=state.get("turn"),
+        data_kind=state.get("customer_context", {}).get("data_kind", "模拟数据"),
+    )
+    return {"status": "completed"}
+
+
 def build_graph() -> Any:
     graph = StateGraph(AgentState)
 
@@ -483,19 +499,24 @@ def build_graph() -> Any:
     def reflection(state: AgentState) -> dict[str, Any]:
         return Harness("reflection_agent", "reflection").execute(state, reflection_logic)
 
+    def memory(state: AgentState) -> dict[str, Any]:
+        return Harness("memory").execute(state, memory_logic)
+
     graph.add_node("planning", planning)
     graph.add_node("intent_agent", intent)
     graph.add_node("research_agent", research)
     graph.add_node("builder_agent", builder)
     graph.add_node("qa_agent", qa)
     graph.add_node("reflection_agent", reflection)
+    graph.add_node("memory", memory)
     graph.set_entry_point("planning")
     graph.add_edge("planning", "intent_agent")
     graph.add_edge("intent_agent", "research_agent")
     graph.add_edge("research_agent", "builder_agent")
     graph.add_edge("builder_agent", "qa_agent")
     graph.add_edge("qa_agent", "reflection_agent")
-    graph.add_edge("reflection_agent", END)
+    graph.add_edge("reflection_agent", "memory")
+    graph.add_edge("memory", END)
     return graph.compile()
 
 
@@ -521,17 +542,6 @@ def execute_run(initial: AgentState) -> AgentState:
             agent_outputs=result.get("agent_outputs"),
             final_output=result.get("final_output"),
             metrics=result.get("metrics"),
-        )
-        memory_store.append_run({**result, "status": "completed"})
-        emit(
-            result,
-            "memory",
-            "completed",
-            "Harness 已将本轮客服记忆写入 Claude Code 风格项目记忆",
-            node="memory",
-            conversation_id=result.get("conversation_id"),
-            turn=result.get("turn"),
-            data_kind=result.get("customer_context", {}).get("data_kind", "模拟数据"),
         )
         run_store.update(run_id, status="completed")
         return result
